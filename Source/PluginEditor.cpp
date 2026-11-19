@@ -38,7 +38,7 @@ StEqEditor::StEqEditor (StEqProcessor& p)
 
 StEqEditor::~StEqEditor()
 {
-    instanceWindow.reset();
+    multiView.reset();
     outputPanel.reset();
     display.setCollisionReference (nullptr);
     matchPopover.reset();
@@ -130,18 +130,21 @@ void StEqEditor::toggleMatch()
 
 void StEqEditor::toggleInstances()
 {
-    if (instanceWindow != nullptr) { instanceWindow.reset(); display.grabKeyboardFocus(); return; }
+    if (multiView != nullptr) { multiView.reset(); display.grabKeyboardFocus(); return; }
     outputPanel.reset();
     matchPopover.reset();
-    instanceWindow = std::make_unique<InstanceWindow> (proc, hub);
-    instanceWindow->onClose = [this]
+    st::MultiView::Options o;
+    o.leftmostKind = "ST EQ";
+    o.glowFor = [this] (st::ProcessorBase& p) { return hub.collisionFor (p); };   // tracks colliding with this one
+    multiView = std::make_unique<st::MultiView> (proc, o);
+    multiView->onClose = [this]
     {
-        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<StEqEditor> (this)] { if (safe != nullptr && safe->instanceWindow != nullptr) safe->toggleInstances(); });
+        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<StEqEditor> (this)] { if (safe != nullptr && safe->multiView != nullptr) safe->toggleInstances(); });
     };
     // covers the whole plugin window (header and bottom bar included) until closed
-    getContent().addAndMakeVisible (*instanceWindow);
-    instanceWindow->setBounds (getContent().getLocalBounds());
-    instanceWindow->toFront (true);
+    getContent().addAndMakeVisible (*multiView);
+    multiView->setBounds (getContent().getLocalBounds());
+    multiView->toFront (true);
 }
 
 void StEqEditor::toggleOutput()
@@ -166,7 +169,7 @@ float StEqEditor::targetPanelX() const
 void StEqEditor::animate (double dt)
 {
     // other instances: spectra + collisions (only while something shows them)
-    hub.update (dt, display.getSpectrum (1), instanceWindow != nullptr || matchPopover != nullptr || display.getAnalyzer().collisions);
+    hub.update (dt, display.getSpectrum (1), multiView != nullptr || matchPopover != nullptr || display.getAnalyzer().collisions);
     display.setCollisionReference (hub.getReference());
 
     if (panel != nullptr)
@@ -208,7 +211,7 @@ void StEqEditor::layout (juce::Rectangle<int>)
 {
     auto all = getContent().getLocalBounds();
     display.setBounds (all.withHeight (displayHeight));
-    if (instanceWindow != nullptr) instanceWindow->setBounds (all);
+    if (multiView != nullptr) multiView->setBounds (all);
     footer.setBounds (all.removeFromBottom (footerHeight));
     panelX.snap (targetPanelX());
     animate (0.0);

@@ -30,6 +30,8 @@ public:
     void setAnalyzer (const AnalyzerSettings&);
     /** Updates spectra and collisions (only while `active`: panel open or collisions shown). */
     void update (double dt, const st::SpectrumAnalyzer& ownPost, bool active);
+    /** How strongly instance `p` collides with this one (0 for this instance or unknown ones). */
+    float collisionFor (const st::ProcessorBase& p) const;
     /** Collision reference for the display, or null when no other instance takes part. */
     const std::vector<float>* getReference() const noexcept { return hasReference ? &reference : nullptr; }
 
@@ -45,65 +47,33 @@ private:
 
     void rebuild();
     void instancesChanged() override { rebuild(); }
-    void instanceRemoved (st::ProcessorBase*) override;
+    void instanceRemoved (uint64_t uid, st::ProcessorBase* local) override;
 };
 
 //==============================================================================
-/** The instance list (bottom bar, centre): covers the whole plugin window, with one row per ST EQ in the session —
-    the track's name and colour on the left, its full EQ display (edit any track's bands right there: drag,
-    wheel, menus, parameter display, solo) — and a track sidebar on the right that shows which tracks are in
-    view and scrolls to one on click. The header has a row-size zoom, a search filter, options, the sidebar
-    toggle and close (back to the EQ; Esc too). The row under the mouse grows a little; rows of tracks that collide with
-    this one glow red; pinned rows stay at the top. */
-class InstanceWindow : public juce::Component, private juce::Timer
+/** ST EQ's module in the multiview (st::MultiView, via StEqProcessor::createStripView): the instance's full
+    EQ display in compact form (bands, menus, parameter display, solo) and a bypass switch. Also shown by
+    other ST plug-ins' multiviews, rendered off screen, so its controls handle the mouse themselves. */
+class EqStrip : public juce::Component
 {
 public:
-    InstanceWindow (StEqProcessor& own, InstanceHub&);
-    ~InstanceWindow() override;
-
-    /** Called when the user closes the list (the owner deletes it, asynchronously). */
-    std::function<void()> onClose;
-
-    int getNumRows() const noexcept { return (int) rows.size(); }
-    /** The editable display of an instance's row (null if it has none). */
-    EqDisplay* getRowDisplay (st::ProcessorBase*) const;
-    /** Forces the magnified row (tests / renders; normally the row under the mouse). */
-    void setHoveredInstance (st::ProcessorBase* p) { forcedHover = p; }
-
-    void paint (juce::Graphics&) override;
+    explicit EqStrip (StEqProcessor&);
+    EqDisplay& getDisplay() noexcept { return display; }
+    juce::Component& getBypassSwitch() noexcept { return power; }
     void resized() override;
-    bool keyPressed (const juce::KeyPress&) override;
-
-    class Row;
-    class Sidebar;
-    class ZoomSlider;
-    class HeaderButton;
 
 private:
-    StEqProcessor& own;
-    InstanceHub& hub;
-    std::vector<std::unique_ptr<Row>> rows;
-    juce::Viewport viewport;
-    juce::Component holder;
-    std::unique_ptr<Sidebar> sidebar;
-    std::unique_ptr<ZoomSlider> zoom;
-    std::unique_ptr<HeaderButton> menuButton, sidebarButton, closeButton;
-    juce::TextEditor search;
-    bool showSidebar = true, sortByName = false;
-    st::ProcessorBase* forcedHover = nullptr;
-    juce::Array<st::ProcessorBase*> pinned;
-    int ticks = 0;
-
-    static constexpr int headerHeight = 44, sidebarWidth = 150, nameWidth = 150;
-    float baseRowHeight() const;
-    void rebuildRows();
-    void layoutRows();
-    void scrollTo (st::ProcessorBase*);
-    void togglePin (st::ProcessorBase*);
-    void showMenu();
-    void timerCallback() override;
-    friend class Row;
-    friend class Sidebar;
+    /** Bypass switch (top left): lights when the EQ is bypassed; click toggles. */
+    struct Power : juce::Component, juce::SettableTooltipClient
+    {
+        explicit Power (StEqProcessor&);
+        void paint (juce::Graphics&) override;
+        void mouseDown (const juce::MouseEvent&) override;
+        juce::ParameterAttachment attachment;
+        bool on = false;
+    };
+    EqDisplay display;
+    Power power;
 };
 
 } // namespace steq

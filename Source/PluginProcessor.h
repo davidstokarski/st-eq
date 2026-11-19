@@ -19,6 +19,9 @@ public:
 
     bool hasEditor() const override { return true; }
     juce::AudioProcessorEditor* createEditor() override;
+    /** The EQ module in the multiview (st::MultiView). */
+    std::unique_ptr<juce::Component> createStripView() override;
+    int getStripWidth (int height) const override { return juce::roundToInt ((float) height * 3.9f); }
     double getTailLengthSeconds() const override { return 0.1; }
 
     //==============================================================================

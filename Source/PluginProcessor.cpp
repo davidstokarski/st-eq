@@ -56,6 +56,7 @@ bool StEqProcessor::anySpectralBand() const noexcept
 
 StEqProcessor::~StEqProcessor()
 {
+    unregisterInstance();   // first: views of this instance (elsewhere) still use its members
     for (auto& id : modeParameterIds()) apvts.removeParameterListener (id, this);
     cancelPendingUpdate();
     worker.stop();
@@ -272,6 +273,11 @@ juce::Array<int> StEqProcessor::pasteBands (const juce::String& text, bool newTr
         added.add (slot);
     }
     return added;
+}
+
+std::unique_ptr<juce::Component> StEqProcessor::createStripView()
+{
+    return std::make_unique<steq::EqStrip> (*this);
 }
 
 juce::AudioProcessorEditor* StEqProcessor::createEditor()

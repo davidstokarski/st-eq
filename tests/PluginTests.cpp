@@ -1,6 +1,9 @@
 // Whole-plugin tests (response per processing mode, latency, dynamics, stress, state, CPU) and editor snapshots.
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#if JUCE_MAC
+ #include <AudioToolbox/AudioToolbox.h>
+#endif
 
 using namespace steq;
 
@@ -764,31 +767,45 @@ static void testInstancesAndOutput (StEqProcessor& p)
         const float loudest = *std::max_element (lv.begin(), lv.end());
         check (loudest > -80.0f, "remote spectrum read (" + juce::String (loudest, 1) + " dB)");
 
-        // instance window: a row (with an editable display) per instance
-        auto* win = e->getInstanceWindow();
-        check (win != nullptr && win->getNumRows() == 2, "instance list lists both instances");
-        check (win != nullptr && win->getParentComponent() != nullptr && win->getBounds() == win->getParentComponent()->getLocalBounds(),
-               "instance list covers the whole plugin window");
-        auto* otherDisplay = win->getRowDisplay (other.get());
-        check (otherDisplay != nullptr && otherDisplay->isCompact(), "editable display for the other instance");
-        if (otherDisplay != nullptr)
+        // multiview: a row per track, a module per plug-in, each editable
+        auto* mv = e->getMultiView();
+        check (mv != nullptr && mv->getNumRows() == 2 && mv->getNumModules() == 2, "multiview: a row per track");
+        check (mv != nullptr && mv->getParentComponent() != nullptr && mv->getBounds() == mv->getParentComponent()->getLocalBounds(),
+               "multiview covers the whole plugin window");
+        auto* strip = mv != nullptr ? dynamic_cast<EqStrip*> (mv->getModuleComponent (other->getInstanceUid())) : nullptr;
+        check (strip != nullptr && strip->getDisplay().isCompact(), "editable EQ module for the other instance");
+        if (strip != nullptr)
         {
-            // edit the other track from this window: double-click its display creates a band there
-            otherDisplay->syncFromParameters();
-            MouseSim ms { *otherDisplay, {} };
+            // edit the other track from here: double-click its display creates a band there
+            auto& od = strip->getDisplay();
+            od.syncFromParameters();
+            MouseSim ms { od, {} };
             const int before2 = other->getNumUsedBands();
-            ms.doubleClick ({ otherDisplay->xForHz (3000.0f), otherDisplay->yForDb (5.0f) });
-            check (other->getNumUsedBands() == before2 + 1 && p.getNumUsedBands() == 0, "editing a row edits that track only");
+            ms.doubleClick ({ od.xForHz (3000.0f), od.yForDb (5.0f) });
+            check (other->getNumUsedBands() == before2 + 1 && p.getNumUsedBands() == 0, "editing a module edits that track only");
+            MouseSim mb { strip->getBypassSwitch(), {} };
+            mb.click ({ 8.0f, 8.0f });
+            check (other->refs.bypass.getBool() && ! p.refs.bypass.getBool(), "module bypass switch bypasses that track");
+            mb.click ({ 8.0f, 8.0f });
         }
-        win->setHoveredInstance (other.get());
-        juce::Image wimg (juce::Image::ARGB, win->getWidth(), win->getHeight(), true);
-        for (int i = 0; i < 40; ++i) { juce::Graphics g (wimg); win->paintEntireComponent (g, true); }
 
-        // destroy the other instance while the window shows it: its row goes first, no crash
-        win->setHoveredInstance (nullptr);
+        // a second plug-in on the same track joins that row
+        auto sameTrack = std::make_unique<StEqProcessor>();
+        sameTrack->updateTrackProperties (tp);
+        reg.flush();
+        check (mv->getNumRows() == 2 && mv->getNumModules() == 3, "same track: one row, modules side by side");
+        sameTrack.reset();
+        check (mv->getNumModules() == 2, "removed module dropped synchronously");
+
+        mv->setHoveredInstance (other->getInstanceUid());
+        juce::Image wimg (juce::Image::ARGB, mv->getWidth(), mv->getHeight(), true);
+        for (int i = 0; i < 40; ++i) { juce::Graphics g (wimg); mv->paintEntireComponent (g, true); }
+
+        // destroy the other instance while the multiview shows it: its module goes first, no crash
+        mv->setHoveredInstance (0);
         other.reset();
-        check (e->getInstanceHub().getOthers().empty() && win->getNumRows() == 1, "removed instance's row dropped synchronously");
-        { juce::Graphics g (wimg); win->paintEntireComponent (g, true); }
+        check (e->getInstanceHub().getOthers().empty() && mv->getNumRows() == 1, "removed instance's row dropped synchronously");
+        { juce::Graphics g (wimg); mv->paintEntireComponent (g, true); }
     }
     e->openOutput();
     ed.reset();
@@ -829,6 +846,117 @@ static void testInstancesAndOutput (StEqProcessor& p)
     setParam (p, ids::panMode, 0.0f);
 }
 
+#if JUCE_MAC
+/** Loads the installed ST Sat AU into this process (a different binary, its own JUCE) and checks that ST EQ's
+    multiview shows it on the same track row as ST EQ (EQ leftmost), renders it and drives it remotely. */
+static void testCrossPlugin (StEqProcessor& p)
+{
+    std::cout << "Cross-plugin multiview (ST Sat AU in this process)\n";
+    AudioComponentDescription desc {};
+    desc.componentType = kAudioUnitType_Effect;
+    desc.componentSubType = 'Stst';
+    desc.componentManufacturer = 'StAu';
+    AudioComponent comp = AudioComponentFindNext (nullptr, &desc);
+    check (comp != nullptr, "ST Sat AU is installed");
+    if (comp == nullptr) return;
+    AudioUnit au = nullptr;
+    check (AudioComponentInstanceNew (comp, &au) == noErr && au != nullptr, "ST Sat AU instantiated in-process");
+    if (au == nullptr) return;
+
+    auto& reg = st::InstanceRegistry::get();
+    reg.flush();
+    st::InstanceRegistry::Info sat;
+    for (auto& i : reg.getAllInstances()) if (i.kind == "ST Sat") sat = i;
+    check (sat.uid != 0 && sat.local == nullptr && sat.api != nullptr, "ST Sat (other binary) visible in the shared registry");
+
+    // same track: the host names both (Logic sends the track name to AUs as the context name)
+    CFStringRef name = CFSTR ("Vocal");
+    AudioUnitSetProperty (au, kAudioUnitProperty_ContextName, kAudioUnitScope_Global, 0, &name, sizeof (name));
+    juce::AudioProcessor::TrackProperties tp;
+    tp.name = juce::String ("Vocal");
+    p.updateTrackProperties (tp);
+    reg.flush();
+
+    std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
+    ed->setSize (StEqEditor::designWidth, StEqEditor::designHeight);
+    auto* e = dynamic_cast<StEqEditor*> (ed.get());
+    e->openInstances();
+    auto* mv = e->getMultiView();
+    mv->refresh();
+    int vocalRow = -1;
+    for (int r = 0; r < mv->getNumRows(); ++r) if (mv->getRowKinds (r).contains ("ST Sat")) vocalRow = r;
+    const auto kinds = mv->getRowKinds (vocalRow);
+    check (kinds.size() == 2 && kinds[0] == "ST EQ" && kinds[1] == "ST Sat", "same track row: ST EQ leftmost, then ST Sat (" + kinds.joinIntoString (", ") + ")");
+    check (mv->getModuleComponent (sat.uid) != nullptr, "ST Sat module shown (remote view)");
+    {
+        juce::Image img (juce::Image::ARGB, mv->getWidth(), mv->getHeight(), true);
+        juce::Graphics g (img);
+        mv->paintEntireComponent (g, true);
+    }
+
+    // the module rendered by ST Sat's own code
+    const auto* api = sat.api;
+    const uint64_t view = api->createView (sat.ctx);
+    check (view != 0, "ST Sat provides a module view");
+    if (view != 0)
+    {
+        const int H = 160, W = api->preferredWidth (view, H);
+        api->setViewSize (view, W, H);
+        std::vector<uint32_t> px ((size_t) (W * H), 0u);
+        check (api->render (view, px.data(), W, H, W * 4, 1.0f) == 1, "remote render");
+        const auto opaque = std::count_if (px.begin(), px.end(), [] (uint32_t v) { return (v >> 24) != 0; });
+        check (opaque > (long) (W * H) / 2, "remote module drew its content (" + juce::String ((int) opaque) + " px)");
+
+        // drag band 1's drive knob up through the forwarded mouse; ST Sat's parameter must follow
+        AudioUnitParameterID driveId = 0;
+        bool found = false;
+        UInt32 size = 0;
+        if (AudioUnitGetPropertyInfo (au, kAudioUnitProperty_ParameterList, kAudioUnitScope_Global, 0, &size, nullptr) == noErr && size > 0)
+        {
+            std::vector<AudioUnitParameterID> ids (size / sizeof (AudioUnitParameterID));
+            AudioUnitGetProperty (au, kAudioUnitProperty_ParameterList, kAudioUnitScope_Global, 0, ids.data(), &size);
+            for (auto id : ids)
+            {
+                AudioUnitParameterInfo info {};
+                UInt32 isz = sizeof (info);
+                if (AudioUnitGetProperty (au, kAudioUnitProperty_ParameterInfo, kAudioUnitScope_Global, id, &info, &isz) != noErr) continue;
+                if (info.cfNameString != nullptr)
+                {
+                    const auto n = juce::String::fromCFString (info.cfNameString);
+                    if ((info.flags & kAudioUnitParameterFlag_CFNameRelease) != 0) CFRelease (info.cfNameString);
+                    if (n == "Band 1 Drive") { driveId = id; found = true; }
+                }
+            }
+        }
+        check (found, "ST Sat drive parameter found");
+        AudioUnitParameterValue before = 0, after = 0;
+        AudioUnitGetParameter (au, driveId, kAudioUnitScope_Global, 0, &before);
+        const int knobs = (int) ((W - 42) / juce::jlimit (54, 110, juce::roundToInt ((float) H * 0.62f)));
+        const float kw = (float) juce::jmin ((W - 24) / juce::jmax (1, knobs), juce::jlimit (54, 110, juce::roundToInt ((float) H * 0.62f)));
+        const float x0 = 12.0f + ((float) (W - 24) - kw * (float) knobs) * 0.5f + kw * 0.5f, y0 = (float) H * 0.5f;
+        api->mouse (view, st::shared::mouseMove, x0, y0, 0, 0, 0, 1);
+        api->mouse (view, st::shared::mouseDown, x0, y0, st::shared::modLeft, 0, 0, 1);
+        for (int i = 1; i <= 10; ++i) api->mouse (view, st::shared::mouseDrag, x0, y0 - 6.0f * (float) i, st::shared::modLeft, 0, 0, 1);
+        api->mouse (view, st::shared::mouseUp, x0, y0 - 60.0f, 0, 0, 0, 1);
+        AudioUnitGetParameter (au, driveId, kAudioUnitScope_Global, 0, &after);
+        check (after > before + 0.1f, "dragging the remote knob changes ST Sat's drive (normalised " + juce::String (before, 2) + " -> " + juce::String (after, 2) + ")");
+        api->destroyView (view);
+    }
+
+    // ST Sat goes away: its module leaves the row, nothing calls into it any more
+    AudioComponentInstanceDispose (au);
+    reg.flush();
+    check (! reg.isAlive (sat.uid) && mv->getModuleComponent (sat.uid) == nullptr, "disposed ST Sat leaves the multiview");
+    {
+        juce::Image img (juce::Image::ARGB, mv->getWidth(), mv->getHeight(), true);
+        juce::Graphics g (img);
+        mv->paintEntireComponent (g, true);
+    }
+    ed.reset();
+    p.updateTrackProperties ({});
+}
+#endif
+
 static int runTests()
 {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -845,6 +973,9 @@ static int runTests()
     testCpu (p);
     testInteraction (p);
     testInstancesAndOutput (p);
+   #if JUCE_MAC
+    testCrossPlugin (p);
+   #endif
 
     // UI: full-editor repaint cost at 2x (retina) with 12 bands, analyser and a selection
     {
@@ -976,6 +1107,9 @@ struct SnapshotApp : juce::JUCEApplicationBase
 {
     std::unique_ptr<StEqProcessor> proc;
     std::vector<std::unique_ptr<StEqProcessor>> extras;
+   #if JUCE_MAC
+    std::vector<AudioUnit> satUnits;
+   #endif
     int64_t extraPos[4] {};
     juce::Random extraRng[4] { juce::Random (11), juce::Random (12), juce::Random (13), juce::Random (14) };
     float extraLp[4][3] {};
@@ -989,7 +1123,16 @@ struct SnapshotApp : juce::JUCEApplicationBase
     void resumed() override {}
     void systemRequestedQuit() override { quit(); }
     void unhandledException (const std::exception*, const juce::String&, int) override {}
-    void shutdown() override { snap.reset(); extras.clear(); proc.reset(); }
+    void shutdown() override
+    {
+        snap.reset();
+       #if JUCE_MAC
+        for (auto au : satUnits) AudioComponentInstanceDispose (au);
+        satUnits.clear();
+       #endif
+        extras.clear();
+        proc.reset();
+    }
 
     void initialise (const juce::String&) override
     {
@@ -1077,6 +1220,22 @@ struct SnapshotApp : juce::JUCEApplicationBase
             p.updateTrackProperties (tp);
             addExtra ("Bass", 0xff3a7ff0, [] (StEqProcessor& e) { e.addBand (Shape::lowCut, 35.0f, 0.0f, 0.71f, 3); e.addBand (Shape::bell, 90.0f, 4.0f, 1.2f); e.addBand (Shape::highCut, 5000.0f, 0.0f, 0.71f, 3); });
             addExtra ("Guitars", 0xff40c070, [] (StEqProcessor& e) { e.addBand (Shape::lowCut, 110.0f, 0.0f, 0.71f, 3); e.addBand (Shape::bell, 2500.0f, 3.0f, 0.9f); e.addBand (Shape::bell, 400.0f, -3.0f, 1.5f); });
+           #if JUCE_MAC
+            // ST Sat (the installed AU, another binary) on the vocal and guitar tracks
+            for (auto* track : { "Lead Vocal", "Guitars" })
+            {
+                AudioComponentDescription d {};
+                d.componentType = kAudioUnitType_Effect; d.componentSubType = 'Stst'; d.componentManufacturer = 'StAu';
+                AudioUnit au = nullptr;
+                if (auto c = AudioComponentFindNext (nullptr, &d); c != nullptr && AudioComponentInstanceNew (c, &au) == noErr)
+                {
+                    CFStringRef n = juce::String (track).toCFString();
+                    AudioUnitSetProperty (au, kAudioUnitProperty_ContextName, kAudioUnitScope_Global, 0, &n, sizeof (n));
+                    CFRelease (n);
+                    satUnits.push_back (au);
+                }
+            }
+           #endif
             st::InstanceRegistry::get().flush();
             snap->onTick = [this]
             {
@@ -1092,14 +1251,15 @@ struct SnapshotApp : juce::JUCEApplicationBase
         }, "12_instances", 1.0f, [this] (StEqEditor& e)
         {
             e.openInstances();
-            if (auto* w = e.getInstanceWindow(); w != nullptr && ! extras.empty())
+            if (auto* w = e.getMultiView(); w != nullptr && ! extras.empty())
             {
-                w->setHoveredInstance (extras[0].get());
-                if (auto* d = w->getRowDisplay (extras[0].get()))
+                w->setHoveredInstance (extras[0]->getInstanceUid());
+                if (auto* strip = dynamic_cast<EqStrip*> (w->getModuleComponent (extras[0]->getInstanceUid())))
                 {
-                    d->syncFromParameters();
-                    MouseSim m { *d, {} };
-                    d->mouseMove (m.ev (d->dotPosition (1), {}));
+                    auto& d = strip->getDisplay();
+                    d.syncFromParameters();
+                    MouseSim m { d, {} };
+                    d.mouseMove (m.ev (d.dotPosition (1), {}));
                 }
             }
         } });

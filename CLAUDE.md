@@ -20,9 +20,11 @@ Plugin-specific notes:
   applying each spectral band's dynamic delta per bin. It only exists while a band has `spectral` on
   (`StEqProcessor::anySpectralBand`), so toggling it re-prepares through `applyModeChange` (latency changes).
   UI reads spectral meters via `StEqProcessor::bandMeter`.
-- Instances: `Source/ui/Instances.*` — `InstanceHub` (other instances via `st::InstanceRegistry`, their spectra
-  through the analyser history tap, collisions) and `InstanceWindow` (overlay covering the whole editor: a row per instance with a
-  compact, fully editable `EqDisplay (proc, true)`, hover magnification, zoom / search / pin / track sidebar). Instances can disappear at any time: the registry removes them synchronously on the message thread.
+- Instances: `Source/ui/Instances.*` — `InstanceHub` (other ST EQs via `st::InstanceRegistry`, their spectra through
+  the analyser history tap, collisions) and `EqStrip` (ST EQ's module in the shell's `st::MultiView`: a compact,
+  fully editable `EqDisplay (proc, true)` + bypass switch). The multiview (all ST plug-ins, by track) is the shell's;
+  the editor opens it full-window. Instances can disappear at any time: the registry removes them synchronously.
+  The tests load the installed ST Sat AU in-process to check the cross-binary multiview.
 - EQ Sketch / EQ Match share the band fitter in `Source/dsp/Sketch.*`.
 - UI: `Source/ui/EqDisplay.*` (display + all band interaction), `Source/ui/BandIsland.*` (the floating band
   controls; dynamics expand inline), `Source/ui/Panels.*` (EQ Match and output popovers, bottom bar), `Source/PluginEditor.*`.

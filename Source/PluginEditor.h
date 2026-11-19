@@ -19,18 +19,18 @@ public:
     steq::BandPanel* getBandPanel() noexcept { return panel.get(); }
     void openDynamicsPopover() { if (panel != nullptr) panel->setExpanded (true); }
     void openMatch() { if (matchPopover == nullptr) toggleMatch(); }
-    /** Opens the instance list (covers the whole plugin window). */
-    void openInstances() { if (instanceWindow == nullptr) toggleInstances(); }
+    /** Opens the multiview (every ST plug-in in the session; covers the whole plugin window). */
+    void openInstances() { if (multiView == nullptr) toggleInstances(); }
     void openOutput() { if (outputPanel == nullptr) toggleOutput(); }
     steq::InstanceHub& getInstanceHub() noexcept { return hub; }
-    steq::InstanceWindow* getInstanceWindow() noexcept { return instanceWindow.get(); }
+    st::MultiView* getMultiView() noexcept { return multiView.get(); }
 
 private:
     StEqProcessor& proc;
     steq::EqDisplay display;
     steq::FooterBar footer;
     steq::InstanceHub hub;
-    std::unique_ptr<steq::InstanceWindow> instanceWindow;
+    std::unique_ptr<st::MultiView> multiView;
     std::unique_ptr<steq::OutputPanel> outputPanel;
     std::unique_ptr<steq::BandPanel> panel, outgoing;
     std::unique_ptr<steq::MatchPopover> matchPopover;
