@@ -115,222 +115,329 @@ void InstanceHub::update (double dt, const st::SpectrumAnalyzer& ownPost, bool a
 }
 
 //==============================================================================
-class InstancePanel::Row : public juce::Component
+/** Small chrome button for the window header (paints its own glyph). */
+class InstanceWindow::HeaderButton : public juce::Button
 {
 public:
-    static constexpr int collapsedHeight = 50, editorHeight = 210;
+    enum class Glyph { dots, sidebar, fullScreen, close, pin };
+    HeaderButton (Glyph g, const juce::String& tip) : juce::Button (tip), glyph (g) { setTooltip (tip); setMouseCursor (juce::MouseCursor::PointingHandCursor); }
 
-    Row (InstancePanel& o, StEqProcessor& p, InstanceHub::Entry* e, const st::SpectrumAnalyzer* ownSpectrum)
-        : owner (o), proc (p), entry (e), mySpectrum (ownSpectrum)
+    void paintButton (juce::Graphics& g, bool over, bool down) override
     {
-        const bool isOwn = entry == nullptr;
-        if (! isOwn)
+        const auto& t = st::Theme::get();
+        auto r = getLocalBounds().toFloat().withSizeKeepingCentre (14.0f, 14.0f);
+        const auto col = getToggleState() ? t.curve : (over || down ? t.text : t.textDim);
+        g.setColour (col);
+        switch (glyph)
         {
-            collide.setClickingTogglesState (true);
-            collide.setToggleState (entry->collide, juce::dontSendNotification);
-            collide.setOnColour (st::Theme::get().danger);
-            collide.onClick = [this] { entry->collide = collide.getToggleState(); };
-            addAndMakeVisible (collide);
-
-            expand.setClickingTogglesState (false);
-            expand.onClick = [this] { owner.toggleExpanded (&proc); };
-            addAndMakeVisible (expand);
+            case Glyph::dots:
+                for (int i = -1; i <= 1; ++i) g.fillEllipse (juce::Rectangle<float> (3.0f, 3.0f).withCentre (r.getCentre().translated (0.0f, 5.0f * (float) i)));
+                break;
+            case Glyph::sidebar:
+                g.drawRoundedRectangle (r.reduced (0.5f, 1.5f), 2.0f, 1.3f);
+                g.fillRect (r.reduced (0.5f, 1.5f).removeFromRight (5.0f));
+                break;
+            case Glyph::fullScreen:
+            {
+                juce::Path p;
+                const float a = 4.5f;
+                const auto q = r.reduced (1.0f);
+                p.startNewSubPath (q.getX(), q.getY() + a); p.lineTo (q.getX(), q.getY()); p.lineTo (q.getX() + a, q.getY());
+                p.startNewSubPath (q.getRight() - a, q.getY()); p.lineTo (q.getRight(), q.getY()); p.lineTo (q.getRight(), q.getY() + a);
+                p.startNewSubPath (q.getRight(), q.getBottom() - a); p.lineTo (q.getRight(), q.getBottom()); p.lineTo (q.getRight() - a, q.getBottom());
+                p.startNewSubPath (q.getX() + a, q.getBottom()); p.lineTo (q.getX(), q.getBottom()); p.lineTo (q.getX(), q.getBottom() - a);
+                g.strokePath (p, juce::PathStrokeType (1.4f));
+                break;
+            }
+            case Glyph::close:
+                st::icons::draw (g, st::icons::Icon::close, r.expanded (2.0f), col, 1.5f);
+                break;
+            case Glyph::pin:
+            {
+                // a push pin, tilted
+                juce::Path p;
+                p.addRoundedRectangle (-2.5f, -6.0f, 5.0f, 6.0f, 1.0f);
+                p.startNewSubPath (-4.5f, 0.0f); p.lineTo (4.5f, 0.0f);
+                p.startNewSubPath (0.0f, 0.0f); p.lineTo (0.0f, 6.0f);
+                p.applyTransform (juce::AffineTransform::rotation (0.6f).translated (r.getCentre()));
+                g.strokePath (p, juce::PathStrokeType (1.2f));
+                break;
+            }
         }
-        for (auto* b : { &collide, &expand }) b->setMinimal (true);
-        setRepaintsOnMouseActivity (true);
-        refresh();
+    }
+
+private:
+    Glyph glyph;
+};
+
+//==============================================================================
+/** Header zoom: row size. */
+class InstanceWindow::ZoomSlider : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    float value = 0.35f;
+    std::function<void()> onChange;
+    ZoomSlider() { setTooltip ("Row size"); setMouseCursor (juce::MouseCursor::LeftRightResizeCursor); }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& t = st::Theme::get();
+        auto r = getLocalBounds().toFloat().reduced (6.0f, 0.0f);
+        const float y = r.getCentreY();
+        g.setColour (juce::Colours::white.withAlpha (0.12f));
+        g.fillRoundedRectangle (r.withHeight (3.0f).withCentre ({ r.getCentreX(), y }), 1.5f);
+        const float x = r.getX() + r.getWidth() * value;
+        g.setColour (t.textDim);
+        g.fillRoundedRectangle (juce::Rectangle<float> (r.getX(), y - 1.5f, x - r.getX(), 3.0f), 1.5f);
+        g.setColour (t.text);
+        g.fillEllipse (juce::Rectangle<float> (10.0f, 10.0f).withCentre ({ x, y }));
+    }
+    void mouseDown (const juce::MouseEvent& e) override { mouseDrag (e); }
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        const auto r = getLocalBounds().toFloat().reduced (6.0f, 0.0f);
+        value = juce::jlimit (0.0f, 1.0f, (e.position.x - r.getX()) / r.getWidth());
+        repaint();
+        if (onChange) onChange();
+    }
+};
+
+//==============================================================================
+/** One track: name chip (+ pin) on the left, its EQ display in a frame. */
+class InstanceWindow::Row : public juce::Component
+{
+public:
+    Row (InstanceWindow& w, StEqProcessor& p, InstanceHub::Entry* e)
+        : owner (w), proc (p), entry (e), display (p, true),
+          pin (HeaderButton::Glyph::pin, "Pin this track to the top of the list"),
+          bypass (st::icons::Icon::power, "Bypass this track's EQ"),
+          bypassAttachment (p.param (ids::bypass), bypass, &p.undoManager)
+    {
+        addAndMakeVisible (display);
+        pin.setClickingTogglesState (false);
+        pin.onClick = [this] { owner.togglePin (&proc); };
+        addAndMakeVisible (pin);
+        bypass.setMinimal (true);
+        bypass.setClickingTogglesState (true);
+        bypass.setOnColour (st::Theme::get().warning);
+        addAndMakeVisible (bypass);
+        height.snap (owner.baseRowHeight());
     }
 
     st::ProcessorBase* getProcessor() const noexcept { return &proc; }
-    bool isExpanded() const noexcept { return editor != nullptr; }
-    int getPreferredHeight() const noexcept { return collapsedHeight + (editor != nullptr ? editorHeight : 0); }
+    EqDisplay& getDisplay() noexcept { return display; }
+    bool isOwn() const noexcept { return entry == nullptr; }
+    st::Animated height;
 
-    void setExpanded (bool e)
+    juce::Rectangle<int> frameBounds() const
     {
-        if (e == isExpanded() || entry == nullptr) return;
-        if (e)
-        {
-            editor = std::make_unique<EqDisplay> (proc, true);
-            addAndMakeVisible (*editor);
-        }
-        else editor.reset();
-        expand.setIcon (e ? st::icons::Icon::chevronUp : st::icons::Icon::chevronDown);
-        resized();
-    }
-
-    /** Re-reads the instance's bands (cheap when unchanged). */
-    void refresh()
-    {
-        bool changed = ! juce::exactlyEqual (lastScale, proc.refs.readGainScale());
-        int used = 0;
-        for (int b = 0; b < kMaxBands; ++b)
-        {
-            const auto p = proc.getBand (b);
-            used += p.used ? 1 : 0;
-            if (! (p == lastBands[(size_t) b])) { lastBands[(size_t) b] = p; changed = true; }
-        }
-        numBands = used;
-        if (! changed && ! curve.empty()) return;
-        lastScale = proc.refs.readGainScale();
-
-        curve.assign (kCurvePoints, 0.0f);
-        for (int b = 0; b < kMaxBands; ++b)
-        {
-            const auto& p = lastBands[(size_t) b];
-            if (! p.isActive()) continue;
-            const auto a = st::dsp::eq::designAnalog (makeSpec (p, lastScale));
-            for (int i = 0; i < kCurvePoints; ++i)
-                curve[(size_t) i] += (float) a.magnitudeDb (curveHz (i));
-        }
+        const int h = getHeight();
+        const int w = juce::jmin (getWidth() - nameWidth - 12, juce::roundToInt ((float) h * 3.9f));
+        return { nameWidth, 0, juce::jmax (120, w), h };
     }
 
     void resized() override
     {
-        auto r = getLocalBounds();
-        auto top = r.removeFromTop (collapsedHeight).reduced (10, 8);
-        expand.setBounds (top.removeFromRight (26).withSizeKeepingCentre (24, 24));
-        collide.setBounds (top.removeFromRight (30).withSizeKeepingCentre (24, 24));
-        top.removeFromRight (8);
-        mini = top.removeFromRight (juce::jmin (380, top.getWidth() - 200)).toFloat();
-        if (editor != nullptr) editor->setBounds (r.reduced (10, 0).withTrimmedBottom (10));
+        const auto f = frameBounds();
+        display.setBounds (f.withTrimmedLeft (20).reduced (1));
+        bypass.setBounds (juce::Rectangle<int> (18, 18).withCentre ({ f.getX() + 10, f.getY() + 13 }));
+        pin.setBounds (juce::Rectangle<int> (22, 22).withPosition (nameWidth - 34, getHeight() / 2 - 30));
     }
 
     void paint (juce::Graphics& g) override
     {
         const auto& t = st::Theme::get();
-        const bool isOwn = entry == nullptr;
-        auto r = getLocalBounds().toFloat().reduced (2.0f, 2.0f);
+        const auto f = frameBounds().toFloat();
         const auto col = instanceColour (proc);
+        const bool pinnedRow = owner.pinned.contains (&proc);
 
-        // card: own instance slightly lighter; collisions glow red at the edge
-        g.setColour ((isOwn ? t.bg3 : t.bg2).withAlpha (isMouseOver (true) ? 0.95f : 0.8f));
-        g.fillRoundedRectangle (r, 6.0f);
-        const float hit = isOwn ? 0.0f : entry->collision;
+        // name chip, right-aligned against the frame (own track bright)
+        g.setFont (st::fonts::semibold (12.0f));
+        const auto label = proc.getInstanceLabel();
+        const float tw = st::fonts::stringWidth (st::fonts::semibold (12.0f), label) + 30.0f;
+        auto chip = juce::Rectangle<float> (juce::jmin (tw, (float) nameWidth - 16.0f), 20.0f)
+                        .withPosition ((float) nameWidth - 12.0f - juce::jmin (tw, (float) nameWidth - 16.0f), (float) getHeight() * 0.5f - 2.0f);
+        g.setColour (isOwn() ? t.bg4 : t.bg3);
+        g.fillRoundedRectangle (chip, 10.0f);
+        g.setColour (isOwn() ? t.text : t.textDim);
+        g.drawFittedText (label, chip.reduced (10.0f, 0.0f).withTrimmedRight (10.0f).toNearestInt(), juce::Justification::centredLeft, 1, 0.8f);
+        g.setColour (col);
+        g.fillEllipse (juce::Rectangle<float> (7.0f, 7.0f).withCentre ({ chip.getRight() - 11.0f, chip.getCentreY() }));
+        if (pinnedRow)
+        {
+            g.setColour (t.curve.withAlpha (0.8f));
+            g.fillEllipse (juce::Rectangle<float> (4.0f, 4.0f).withCentre ({ (float) nameWidth - 23.0f, (float) getHeight() * 0.5f - 34.0f }));
+        }
+
+        // frame: dark card, vertical product label, collision glow
+        g.setColour (t.bg1);
+        g.fillRoundedRectangle (f, 6.0f);
+        const float hit = entry != nullptr ? entry->collision : 0.0f;
         if (hit > 0.02f)
         {
             for (int i = 3; i >= 1; --i)
             {
                 g.setColour (t.danger.withAlpha (0.12f * hit / (float) i));
-                g.drawRoundedRectangle (r.reduced (-0.5f + (float) i), 6.0f, (float) i * 1.6f);
+                g.drawRoundedRectangle (f.expanded ((float) i), 7.0f, (float) i * 1.6f);
             }
-            g.setColour (t.danger.withAlpha (0.65f * hit));
-            g.drawRoundedRectangle (r, 6.0f, 1.0f);
         }
-        else
+        g.setColour (hit > 0.02f ? t.danger.withAlpha (0.35f + 0.5f * hit) : juce::Colours::white.withAlpha (isOwn() ? 0.14f : 0.07f));
+        g.drawRoundedRectangle (f.reduced (0.5f), 6.0f, 1.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.05f));
+        g.fillRect (f.withWidth (20.0f).withTrimmedTop (6.0f).withTrimmedBottom (6.0f).withX (f.getX() + 19.0f).withWidth (1.0f));
         {
-            g.setColour (juce::Colours::white.withAlpha (isOwn ? 0.10f : 0.05f));
-            g.drawRoundedRectangle (r, 6.0f, 1.0f);
+            g.saveState();
+            const auto c = juce::Point<float> (f.getX() + 10.0f, f.getBottom() - 30.0f);
+            g.addTransform (juce::AffineTransform::rotation (-juce::MathConstants<float>::halfPi, c.x, c.y));
+            g.setFont (st::fonts::semibold (8.5f));
+            g.setColour (t.textFaint);
+            g.drawText ("ST EQ", juce::Rectangle<float> (50.0f, 12.0f).withCentre (c), juce::Justification::centred, false);
+            g.restoreState();
         }
-
-        // colour stripe + name
-        auto head = r.withHeight ((float) collapsedHeight - 4.0f);
-        g.setColour (col);
-        g.fillRoundedRectangle (head.removeFromLeft (4.0f).reduced (0.0f, 9.0f).translated (6.0f, 0.0f), 2.0f);
-        auto text = head.withTrimmedLeft (18.0f).withRight (mini.getX() - 8.0f);
-        g.setFont (st::fonts::semibold (13.5f));
-        g.setColour (t.text);
-        g.drawText (proc.getInstanceLabel(), text.removeFromTop (text.getHeight() * 0.55f), juce::Justification::bottomLeft, true);
-        g.setFont (st::fonts::regular (11.0f));
-        g.setColour (t.textDim);
-        juce::String sub = isOwn ? "This instance" : modeNames[juce::jlimit (0, 2, proc.refs.mode.getInt())];
-        sub << "  ·  " << numBands << (numBands == 1 ? " band" : " bands");
-        if (! isOwn && hit > 0.3f) sub << "  ·  collides";
-        g.drawText (sub, text, juce::Justification::topLeft, true);
-
-        paintMini (g);
-    }
-
-    void mouseUp (const juce::MouseEvent& e) override
-    {
-        if (entry != nullptr && e.mouseWasClicked() && e.y < collapsedHeight) owner.toggleExpanded (&proc);
     }
 
 private:
-    static constexpr int kCurvePoints = 96;
-    static float curveHz (int i) { return 20.0f * std::pow (1000.0f, (float) i / (float) (kCurvePoints - 1)); }
-
-    InstancePanel& owner;
+    InstanceWindow& owner;
     StEqProcessor& proc;
     InstanceHub::Entry* entry;
-    const st::SpectrumAnalyzer* mySpectrum;
-    st::IconButton collide { st::icons::Icon::stereoLink, "Compare with this instance: collisions are shown in red in the analyser" };
-    st::IconButton expand { st::icons::Icon::chevronDown, "Edit this instance's EQ here" };
-    std::unique_ptr<EqDisplay> editor;
-    std::array<BandParams, kMaxBands> lastBands {};
-    float lastScale = -1000.0f;
-    int numBands = 0;
-    std::vector<float> curve;
-    juce::Rectangle<float> mini;
-
-    void paintMini (juce::Graphics& g)
-    {
-        const auto& t = st::Theme::get();
-        auto area = mini;
-        g.setColour (juce::Colours::black.withAlpha (0.25f));
-        g.fillRoundedRectangle (area, 4.0f);
-        g.saveState();
-        g.reduceClipRegion (area.toNearestInt());
-
-        auto xFor = [&] (float hz) { return area.getX() + area.getWidth() * std::log (hz / 20.0f) / std::log (1000.0f); };
-
-        // spectrum (grey area), from the instance's analyser
-        const auto* sp = entry != nullptr ? entry->spectrum.get() : mySpectrum;
-        if (sp != nullptr && sp->getNumPoints() > 1)
-        {
-            const auto& lv = sp->getLevelsDb();
-            juce::Path p;
-            p.startNewSubPath (area.getX(), area.getBottom());
-            for (int i = 0; i < sp->getNumPoints(); ++i)
-            {
-                const float hz = sp->getFrequencyForPoint (i);
-                if (hz < 20.0f || hz > 20000.0f) continue;
-                const float y = area.getY() + area.getHeight() * juce::jlimit (0.0f, 1.0f, -lv[(size_t) i] / 90.0f);
-                p.lineTo (xFor (hz), y);
-            }
-            p.lineTo (area.getRight(), area.getBottom());
-            p.closeSubPath();
-            g.setColour (t.spectrum.withAlpha (0.13f));
-            g.fillPath (p);
-        }
-
-        // 0 dB line and the EQ curve (+/-18 dB over the height)
-        const float mid = area.getCentreY();
-        g.setColour (juce::Colours::white.withAlpha (0.07f));
-        g.drawHorizontalLine (juce::roundToInt (mid), area.getX(), area.getRight());
-        juce::Path c;
-        for (int i = 0; i < (int) curve.size(); ++i)
-        {
-            const float y = mid - juce::jlimit (-24.0f, 24.0f, curve[(size_t) i]) / 18.0f * area.getHeight() * 0.5f;
-            if (i == 0) c.startNewSubPath (xFor (curveHz (i)), y); else c.lineTo (xFor (curveHz (i)), y);
-        }
-        g.setColour (t.curve.withAlpha (0.9f));
-        g.strokePath (c, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved));
-        g.restoreState();
-    }
+    EqDisplay display;
+    HeaderButton pin;
+    st::IconButton bypass;
+    juce::ButtonParameterAttachment bypassAttachment;
 };
 
 //==============================================================================
-InstancePanel::InstancePanel (StEqProcessor& o, InstanceHub& h, EqDisplay& d)
-    : st::Popover ("Instances"), own (o), hub (h), ownDisplay (d)
+/** Track list on the right: every track with its colour; the tracks in view are boxed; click to scroll. */
+class InstanceWindow::Sidebar : public juce::Component
 {
+public:
+    explicit Sidebar (InstanceWindow& w) : owner (w) { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
+    static constexpr float lineH = 18.0f, top = 10.0f;
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& t = st::Theme::get();
+        const auto view = owner.viewport.getViewArea();
+        int first = -1, last = -1;
+        for (int i = 0; i < (int) owner.rows.size(); ++i)
+        {
+            auto& r = *owner.rows[(size_t) i];
+            if (! r.isVisible()) continue;
+            if (r.getBounds().intersects (view)) { if (first < 0) first = i; last = i; }
+        }
+        if (first >= 0)
+        {
+            auto box = juce::Rectangle<float> (4.0f, top + lineH * (float) first - 2.0f, (float) getWidth() - 10.0f, lineH * (float) (last - first + 1) + 4.0f);
+            g.setColour (juce::Colours::white.withAlpha (0.05f));
+            g.fillRoundedRectangle (box, 3.0f);
+            g.setColour (juce::Colours::white.withAlpha (0.18f));
+            g.drawRoundedRectangle (box.reduced (0.5f), 3.0f, 1.0f);
+        }
+        for (int i = 0; i < (int) owner.rows.size(); ++i)
+        {
+            auto& r = *owner.rows[(size_t) i];
+            const auto line = juce::Rectangle<float> (8.0f, top + lineH * (float) i, (float) getWidth() - 16.0f, lineH);
+            g.setColour (instanceColour (*r.getProcessor()).withAlpha (r.isVisible() ? 1.0f : 0.35f));
+            g.fillRect (line.withWidth (2.5f).reduced (0.0f, 3.0f));
+            const bool inView = i >= first && i <= last;
+            g.setFont (r.isOwn() ? st::fonts::semibold (11.5f) : st::fonts::regular (11.5f));
+            g.setColour (! r.isVisible() ? t.textFaint.withAlpha (0.5f) : (inView || i == hover ? t.text : t.textDim));
+            g.drawText (r.getProcessor()->getInstanceLabel(), line.withTrimmedLeft (8.0f), juce::Justification::centredLeft, true);
+        }
+    }
+    void mouseMove (const juce::MouseEvent& e) override { const int h = indexAt (e.position.y); if (h != hover) { hover = h; repaint(); } }
+    void mouseExit (const juce::MouseEvent&) override { hover = -1; repaint(); }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        const int i = indexAt (e.position.y);
+        if (i >= 0) owner.scrollTo (owner.rows[(size_t) i]->getProcessor());
+    }
+
+private:
+    InstanceWindow& owner;
+    int hover = -1;
+    int indexAt (float y) const { const int i = (int) std::floor ((y - top) / lineH); return juce::isPositiveAndBelow (i, (int) owner.rows.size()) ? i : -1; }
+};
+
+//==============================================================================
+InstanceWindow::InstanceWindow (StEqProcessor& o, InstanceHub& h) : own (o), hub (h)
+{
+    setOpaque (true);
+    setWantsKeyboardFocus (true);
+
     viewport.setViewedComponent (&holder, false);
     viewport.setScrollBarsShown (true, false);
-    viewport.setScrollBarThickness (6);
+    viewport.setScrollBarThickness (7);
     addAndMakeVisible (viewport);
+
+    sidebar = std::make_unique<Sidebar> (*this);
+    addAndMakeVisible (*sidebar);
+
+    zoom = std::make_unique<ZoomSlider>();
+    zoom->onChange = [this] { for (auto& r : rows) r->height.snap (baseRowHeight()); layoutRows(); };
+    addAndMakeVisible (*zoom);
+
+    const auto& t = st::Theme::get();
+    search.setTextToShowWhenEmpty ("Search", t.textFaint);
+    search.setJustification (juce::Justification::centred);
+    search.setFont (st::fonts::regular (13.0f));
+    search.setColour (juce::TextEditor::backgroundColourId, t.bg2);
+    search.setColour (juce::TextEditor::textColourId, t.text);
+    search.setColour (juce::TextEditor::outlineColourId, juce::Colours::white.withAlpha (0.08f));
+    search.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colours::white.withAlpha (0.2f));
+    search.onTextChange = [this] { layoutRows(); };
+    search.onEscapeKey = [this] { search.clear(); layoutRows(); grabKeyboardFocus(); };
+    addAndMakeVisible (search);
+
+    menuButton = std::make_unique<HeaderButton> (HeaderButton::Glyph::dots, "Options");
+    sidebarButton = std::make_unique<HeaderButton> (HeaderButton::Glyph::sidebar, "Show / hide the track list");
+    fullButton = std::make_unique<HeaderButton> (HeaderButton::Glyph::fullScreen, "Full screen");
+    closeButton = std::make_unique<HeaderButton> (HeaderButton::Glyph::close, "Close");
+    menuButton->onClick = [this] { showMenu(); };
+    sidebarButton->onClick = [this] { showSidebar = ! showSidebar; resized(); };
+    fullButton->onClick = [this] { toggleFullScreen(); };
+    closeButton->onClick = [this] { if (onClose) onClose(); };
+    for (auto* b : { menuButton.get(), sidebarButton.get(), fullButton.get(), closeButton.get() }) addAndMakeVisible (*b);
+
+    constrainer.setMinimumSize (720, 360);
+    corner = std::make_unique<juce::ResizableCornerComponent> (this, &constrainer);
+    addAndMakeVisible (*corner);
+
     hub.onListChanged = [this] { rebuildRows(); };
     rebuildRows();
-    startTimerHz (24);
+    setSize (1120, 720);
+    startTimerHz (60);
 }
 
-InstancePanel::~InstancePanel()
+InstanceWindow::~InstanceWindow()
 {
-    hub.onListChanged = nullptr;
+    hub.onListChanged = [] {};
     stopTimer();
+    rows.clear();
 }
 
-void InstancePanel::rebuildRows()
+void InstanceWindow::openOnDesktop (juce::Component* near)
 {
-    // keep rows of instances that are still there (their editors and expansion stay), add new ones
+    addToDesktop (juce::ComponentPeer::windowHasDropShadow | juce::ComponentPeer::windowAppearsOnTaskbar);
+    if (near != nullptr)
+    {
+        const auto c = near->getScreenBounds().getCentre();
+        const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForPoint (c.toFloat())->userBounds.toNearestInt();
+        setBounds (getLocalBounds().withCentre (c).constrainedWithin (area));
+    }
+    setAlwaysOnTop (true);
+    setVisible (true);
+    toFront (true);
+}
+
+float InstanceWindow::baseRowHeight() const
+{
+    return 70.0f + 170.0f * (zoom != nullptr ? zoom->value : 0.35f);
+}
+
+void InstanceWindow::rebuildRows()
+{
+    // keep rows (and their displays) of instances that are still there
     std::vector<std::unique_ptr<Row>> next;
     auto take = [this] (st::ProcessorBase* p) -> std::unique_ptr<Row>
     {
@@ -338,82 +445,186 @@ void InstancePanel::rebuildRows()
             if (r != nullptr && r->getProcessor() == p) return std::move (r);
         return {};
     };
-
-    auto ownRow = take (&own);
-    if (ownRow == nullptr) ownRow = std::make_unique<Row> (*this, own, nullptr, &ownDisplay.getSpectrum (1));
-    next.push_back (std::move (ownRow));
-    for (auto& e : hub.getOthers())
+    auto add = [&] (StEqProcessor& p, InstanceHub::Entry* e)
     {
-        auto row = take (e->proc);
-        if (row == nullptr) row = std::make_unique<Row> (*this, *e->proc, e.get(), nullptr);
+        auto row = take (&p);
+        if (row == nullptr) row = std::make_unique<Row> (*this, p, e);
         next.push_back (std::move (row));
-    }
-    rows = std::move (next);   // rows of removed instances (and their embedded editors) are destroyed here
+    };
+    add (own, nullptr);
+    for (auto& e : hub.getOthers()) add (*e->proc, e.get());
+    rows = std::move (next);   // rows of instances that are gone are destroyed here, before the instance is
+    for (int i = pinned.size(); --i >= 0;)
+        if (std::none_of (rows.begin(), rows.end(), [p = pinned[i]] (const auto& r) { return r->getProcessor() == p; })) pinned.remove (i);
 
-    bool expandedAlive = false;
+    // order: pinned first, then session order (or by name)
+    std::stable_sort (rows.begin(), rows.end(), [this] (const auto& a, const auto& b)
+    {
+        const bool pa = pinned.contains (a->getProcessor()), pb = pinned.contains (b->getProcessor());
+        if (pa != pb) return pa;
+        if (sortByName) return a->getProcessor()->getInstanceLabel().compareNatural (b->getProcessor()->getInstanceLabel()) < 0;
+        return a->getProcessor()->getInstanceNumber() < b->getProcessor()->getInstanceNumber();
+    });
+    for (auto& r : rows) holder.addAndMakeVisible (*r);
+    layoutRows();
+    if (sidebar != nullptr) sidebar->repaint();
+    repaint();
+}
+
+void InstanceWindow::layoutRows()
+{
+    const auto filter = search.getText().trim();
+    const int w = viewport.getMaximumVisibleWidth();
+    int y = 12;
     for (auto& r : rows)
     {
-        holder.addAndMakeVisible (*r);
-        expandedAlive |= r->getProcessor() == expanded;
+        const bool show = filter.isEmpty() || r->getProcessor()->getInstanceLabel().containsIgnoreCase (filter);
+        r->setVisible (show);
+        if (! show) continue;
+        const int h = juce::roundToInt (r->height.current);
+        r->setBounds (0, y, w, h);
+        y += h + 14;
     }
-    if (! expandedAlive) expanded = nullptr;
-
-    setTitle ("Instances", juce::String (rows.size()) + (rows.size() == 1 ? " instance" : " instances") + " in this session");
-    resized();
-    if (onHeightChanged) onHeightChanged();
+    holder.setSize (w, y + 12);
+    if (sidebar != nullptr) sidebar->repaint();
 }
 
-void InstancePanel::toggleExpanded (st::ProcessorBase* p)
+void InstanceWindow::scrollTo (st::ProcessorBase* p)
 {
-    expanded = expanded == p ? nullptr : p;
-    for (auto& r : rows) r->setExpanded (r->getProcessor() == expanded);
-    resized();
-    if (onHeightChanged) onHeightChanged();
-}
-
-bool InstancePanel::hasInlineEditor() const
-{
-    return std::any_of (rows.begin(), rows.end(), [] (const auto& r) { return r->isExpanded(); });
-}
-
-int InstancePanel::rowsHeight() const
-{
-    int h = 0;
-    for (auto& r : rows) h += r->getPreferredHeight() + 4;
-    return h;
-}
-
-int InstancePanel::getPanelHeight() const
-{
-    return juce::jmin (430, headerHeight + 28 + rowsHeight());
-}
-
-void InstancePanel::layoutContent (juce::Rectangle<int> content)
-{
-    viewport.setBounds (content);
-    const int w = content.getWidth() - (rowsHeight() > content.getHeight() ? 8 : 0);
-    holder.setSize (w, rowsHeight());
-    int y = 0;
     for (auto& r : rows)
-    {
-        r->setBounds (0, y, w, r->getPreferredHeight());
-        y += r->getPreferredHeight() + 4;
-    }
+        if (r->getProcessor() == p && r->isVisible())
+            viewport.setViewPosition (0, juce::jmax (0, r->getY() - 12));
+    sidebar->repaint();
 }
 
-void InstancePanel::paintContent (juce::Graphics& g)
+void InstanceWindow::togglePin (st::ProcessorBase* p)
 {
-    if (rows.size() > 1) return;
+    if (pinned.contains (p)) pinned.removeFirstMatchingValue (p);
+    else pinned.add (p);
+    rebuildRows();
+}
+
+void InstanceWindow::showMenu()
+{
+    juce::PopupMenu m;
+    m.addItem (juce::PopupMenu::Item ("Sort by Track Name").setTicked (sortByName).setAction ([this] { sortByName = ! sortByName; rebuildRows(); }));
+    m.addItem (juce::PopupMenu::Item ("Show Track List").setTicked (showSidebar).setAction ([this] { showSidebar = ! showSidebar; resized(); }));
+    m.addSeparator();
+    m.addItem (juce::PopupMenu::Item ("Compare Collisions with All Tracks").setAction ([this] { for (auto& e : hub.getOthers()) e->collide = true; }));
+    m.addItem (juce::PopupMenu::Item ("Unpin All").setEnabled (! pinned.isEmpty()).setAction ([this] { pinned.clear(); rebuildRows(); }));
+    st::showMenu (m, menuButton.get());
+}
+
+void InstanceWindow::toggleFullScreen()
+{
+    if (! isOnDesktop()) return;
+    const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (getScreenBounds())->userBounds.toNearestInt();
+    if (getBounds() == area && ! normalBounds.isEmpty()) setBounds (normalBounds);
+    else { normalBounds = getBounds(); setBounds (area); }
+}
+
+EqDisplay* InstanceWindow::getRowDisplay (st::ProcessorBase* p) const
+{
+    for (auto& r : rows)
+        if (r->getProcessor() == p) return &r->getDisplay();
+    return nullptr;
+}
+
+void InstanceWindow::resized()
+{
+    auto r = getLocalBounds();
+    auto header = r.removeFromTop (headerHeight).reduced (14, 8);
+    closeButton->setBounds (header.removeFromRight (26));
+    header.removeFromRight (6);
+    fullButton->setBounds (header.removeFromRight (26));
+    header.removeFromRight (6);
+    sidebarButton->setBounds (header.removeFromRight (26));
+    sidebarButton->setToggleState (showSidebar, juce::dontSendNotification);
+
+    const int cx = getWidth() / 2;
+    search.setBounds (juce::Rectangle<int> (200, 26).withCentre ({ cx + 60, header.getCentreY() }));
+    zoom->setBounds (juce::Rectangle<int> (90, 20).withCentre ({ search.getX() - 70, header.getCentreY() }));
+    menuButton->setBounds (juce::Rectangle<int> (26, 26).withCentre ({ search.getRight() + 26, header.getCentreY() }));
+
+    sidebar->setVisible (showSidebar);
+    if (showSidebar) sidebar->setBounds (r.removeFromRight (sidebarWidth));
+    viewport.setBounds (r.reduced (8, 0).withTrimmedBottom (8));
+    corner->setBounds (getWidth() - 16, getHeight() - 16, 16, 16);
+    layoutRows();
+}
+
+void InstanceWindow::paint (juce::Graphics& g)
+{
     const auto& t = st::Theme::get();
-    g.setFont (st::fonts::regular (12.0f));
+    g.fillAll (t.bg0);
+    auto header = getLocalBounds().removeFromTop (headerHeight).toFloat();
+    g.setColour (t.bg1);
+    g.fillRect (header);
+    g.setColour (juce::Colours::white.withAlpha (0.06f));
+    g.fillRect (header.removeFromBottom (1.0f));
+
+    // title, left
+    g.setFont (st::fonts::bold (14.0f));
+    g.setColour (t.text);
+    g.drawText ("ST", juce::Rectangle<float> (18.0f, 0.0f, 30.0f, (float) headerHeight), juce::Justification::centredLeft, false);
+    g.setFont (st::fonts::medium (14.0f));
+    g.setColour (t.curve);
+    g.drawText ("EQ", juce::Rectangle<float> (42.0f, 0.0f, 30.0f, (float) headerHeight), juce::Justification::centredLeft, false);
+    g.setFont (st::fonts::regular (13.0f));
     g.setColour (t.textDim);
-    g.drawText ("Insert ST EQ on other tracks: they appear here, with their curves, collisions and inline editing.",
-                getContentBounds().withTrimmedTop (Row::collapsedHeight + 10).toFloat(), juce::Justification::centredTop, true);
+    g.drawText ("Instances  " + juce::String (rows.size()), juce::Rectangle<float> (74.0f, 0.0f, 160.0f, (float) headerHeight), juce::Justification::centredLeft, false);
+
+    if (showSidebar)
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.05f));
+        g.fillRect ((float) getWidth() - (float) sidebarWidth, (float) headerHeight, 1.0f, (float) (getHeight() - headerHeight));
+    }
+    g.setColour (juce::Colours::white.withAlpha (0.08f));
+    g.drawRect (getLocalBounds(), 1);
 }
 
-void InstancePanel::timerCallback()
+void InstanceWindow::mouseDown (const juce::MouseEvent& e)
 {
-    for (auto& r : rows) { r->refresh(); r->repaint(); }
+    if (e.y < headerHeight && isOnDesktop()) dragger.startDraggingComponent (this, e);
+}
+
+void InstanceWindow::mouseDrag (const juce::MouseEvent& e)
+{
+    if (e.mouseDownPosition.y < (float) headerHeight && isOnDesktop()) dragger.dragComponent (this, e, nullptr);
+}
+
+bool InstanceWindow::keyPressed (const juce::KeyPress& k)
+{
+    if (k == juce::KeyPress::escapeKey) { if (onClose) onClose(); return true; }
+    return false;
+}
+
+void InstanceWindow::timerCallback()
+{
+    // the row under the mouse grows a little (animated); everything else eases back
+    st::ProcessorBase* hovered = forcedHover;
+    if (hovered == nullptr && isShowing())
+    {
+        const auto pos = holder.getMouseXYRelative();
+        if (viewport.getViewArea().contains (pos))
+            for (auto& r : rows)
+                if (r->isVisible() && r->getBounds().contains (pos)) hovered = r->getProcessor();
+    }
+    bool moving = false;
+    const float base = baseRowHeight();
+    for (auto& r : rows)
+    {
+        r->height.setTarget (r->getProcessor() == hovered ? base * 1.3f : base);
+        moving |= r->height.tick (1.0 / 60.0, 14.0f);
+    }
+    if (moving) layoutRows();
+
+    // collision glows / names follow the hub
+    if (++ticks % 6 == 0)
+    {
+        for (auto& r : rows) if (r->isVisible()) r->repaint (0, 0, r->getWidth(), r->getHeight());
+        sidebar->repaint();
+    }
 }
 
 } // namespace steq

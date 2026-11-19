@@ -685,10 +685,10 @@ static void testInteraction (StEqProcessor& p)
         hover();
         const auto gainBox = d.getReadoutPart (0, "gain");
         check (! gainBox.isEmpty(), "parameter display has a gain value");
-        const float g0 = p.getBand (0).gain;
+        const float gain0 = p.getBand (0).gain;
         d.mouseMove (m.ev (gainBox.getCentre(), {}));   // crossing onto the display keeps it
         m.drag (gainBox.getCentre(), gainBox.getCentre().translated (0.0f, -20.0f));
-        check (std::abs (p.getBand (0).gain - (g0 + 2.0f)) < 0.3f, "dragging the gain value up (" + juce::String (p.getBand (0).gain, 2) + " dB)");
+        check (std::abs (p.getBand (0).gain - (gain0 + 2.0f)) < 0.3f, "dragging the gain value up (" + juce::String (p.getBand (0).gain, 2) + " dB)");
 
         check (std::abs (std::log2 (p.getBand (0).freq / 1000.0f)) < 0.05f, "a committed value entry is not applied again by the next click");
         hover();
@@ -758,21 +758,35 @@ static void testInstancesAndOutput (StEqProcessor& p)
         other->addBand (Shape::bell, 200.0f, 6.0f, 1.0f);
         bool finite = true;
         runNoise (*other, 40, 512, finite);
-        e->openInstances();
+        e->openInstances (false);
         e->getInstanceHub().update (0.5, e->getDisplay().getSpectrum (1), true);
         const auto& lv = e->getInstanceHub().getOthers()[0]->spectrum->getLevelsDb();
         const float loudest = *std::max_element (lv.begin(), lv.end());
         check (loudest > -80.0f, "remote spectrum read (" + juce::String (loudest, 1) + " dB)");
 
-        // destroy the other instance while the panel shows it (and its inline editor): must not crash
-        e->getInstancePanel()->expandInstance (other.get());
-        check (e->getInstancePanel()->hasInlineEditor(), "inline editor for the other instance");
-        ed->setSize (StEqEditor::designWidth, StEqEditor::designHeight);
-        juce::Image img (juce::Image::ARGB, StEqEditor::designWidth, StEqEditor::designHeight, true);
-        { juce::Graphics g (img); ed->paintEntireComponent (g, true); }
+        // instance window: a row (with an editable display) per instance
+        auto* win = e->getInstanceWindow();
+        check (win != nullptr && win->getNumRows() == 2, "instance window lists both instances");
+        auto* otherDisplay = win->getRowDisplay (other.get());
+        check (otherDisplay != nullptr && otherDisplay->isCompact(), "editable display for the other instance");
+        if (otherDisplay != nullptr)
+        {
+            // edit the other track from this window: double-click its display creates a band there
+            otherDisplay->syncFromParameters();
+            MouseSim ms { *otherDisplay, {} };
+            const int before2 = other->getNumUsedBands();
+            ms.doubleClick ({ otherDisplay->xForHz (3000.0f), otherDisplay->yForDb (5.0f) });
+            check (other->getNumUsedBands() == before2 + 1 && p.getNumUsedBands() == 0, "editing a row edits that track only");
+        }
+        win->setHoveredInstance (other.get());
+        juce::Image wimg (juce::Image::ARGB, win->getWidth(), win->getHeight(), true);
+        for (int i = 0; i < 40; ++i) { juce::Graphics g (wimg); win->paintEntireComponent (g, true); }
+
+        // destroy the other instance while the window shows it: its row goes first, no crash
+        win->setHoveredInstance (nullptr);
         other.reset();
-        check (e->getInstanceHub().getOthers().empty() && ! e->getInstancePanel()->hasInlineEditor(), "removed instance (and its inline editor) dropped synchronously");
-        { juce::Graphics g (img); ed->paintEntireComponent (g, true); }
+        check (e->getInstanceHub().getOthers().empty() && win->getNumRows() == 1, "removed instance's row dropped synchronously");
+        { juce::Graphics g (wimg); win->paintEntireComponent (g, true); }
     }
     e->openOutput();
     ed.reset();
@@ -940,6 +954,15 @@ struct Snapshotter : juce::Timer
             juce::PNGImageFormat().writeImageToStream (img, out);
             std::cout << "wrote " << file.getFullPathName() << "\n";
             if (auto* e = dynamic_cast<StEqEditor*> (ed.get()))
+                if (auto* w = e->getInstanceWindow())
+                {
+                    auto wi = w->createComponentSnapshot (w->getLocalBounds(), true, 2.0f);
+                    auto f3 = dir.getChildFile (jobs[index].name + "_window.png");
+                    f3.deleteFile();
+                    juce::FileOutputStream o3 (f3);
+                    juce::PNGImageFormat().writeImageToStream (wi, o3);
+                }
+            if (auto* e = dynamic_cast<StEqEditor*> (ed.get()))
                 if (auto* bp = e->getBandPanel(); bp != nullptr && jobs[index].scale == 1.0f)
                 {
                     auto crop = ed->createComponentSnapshot (bp->getBounds().expanded (6), true, 4.0f);
@@ -1075,8 +1098,18 @@ struct SnapshotApp : juce::JUCEApplicationBase
             };
         }, "12_instances", 1.0f, [this] (StEqEditor& e)
         {
-            e.openInstances();
-            if (auto* ip = e.getInstancePanel(); ip != nullptr && ! extras.empty()) ip->expandInstance (extras[1].get());
+            e.openInstances (false);
+            if (auto* w = e.getInstanceWindow(); w != nullptr && ! extras.empty())
+            {
+                w->setSize (1180, 760);
+                w->setHoveredInstance (extras[0].get());
+                if (auto* d = w->getRowDisplay (extras[0].get()))
+                {
+                    d->syncFromParameters();
+                    MouseSim m { *d, {} };
+                    d->mouseMove (m.ev (d->dotPosition (1), {}));
+                }
+            }
         } });
         snap->jobs.push_back ({ [] {}, "13_output", 1.0f, [] (StEqEditor& e) { e.openOutput(); } });
         snap->jobs.push_back ({ [load, selectBands] { load ("Vocal Presence"); selectBands ("", -1); }, "14_param_display", 1.0f, [] (StEqEditor& e)

@@ -135,7 +135,7 @@ EqDisplay::EqDisplay (StEqProcessor& p, bool isCompact) : proc (p), compact (isC
     rb->setIndex = [this] (int i) { setDisplayRange (i); };
     rangeBox = std::move (rb);
     addAndMakeVisible (*rangeBox);
-    if (compact) { sketchButton.setVisible (false); pianoButton.setVisible (false); rangeBox->setVisible (false); piano = false; }
+    if (compact) { sketchButton.setVisible (false); pianoButton.setVisible (false); piano = false; }
 
     clock = std::make_unique<st::FrameClock> (*this, [this] (double dt) { frame (dt); });
 }
@@ -340,9 +340,10 @@ void EqDisplay::resized()
     auto r = getLocalBounds().toFloat();
     if (compact)
     {
-        plot = r;
+        // no label strip: the plot runs 18 px past the bottom so everything drawn to "bottom - 18" fills the row
+        plot = r.withHeight (r.getHeight() + 18.0f);
         meterArea = {};
-        eqArea = juce::Rectangle<float> (plot.getX(), plot.getY() + plot.getHeight() * 0.1f, plot.getWidth(), (plot.getHeight() - 18.0f) * 0.8f);
+        eqArea = juce::Rectangle<float> (plot.getX(), r.getY() + r.getHeight() * 0.1f, plot.getWidth(), r.getHeight() * 0.8f);
     }
     else
     {
@@ -666,7 +667,7 @@ void EqDisplay::paint (juce::Graphics& g)
 
     bool any = false;
     for (auto& b : bands) any |= b.used;
-    if (! any && ! sketchMode)
+    if (! any && ! sketchMode && ! compact)
     {
         g.setFont (st::fonts::medium (13.0f));
         g.setColour (t.text.withAlpha (0.45f));
@@ -702,7 +703,8 @@ void EqDisplay::paintGrid (juce::Graphics& g)
         g.setColour (juce::Colours::white.withAlpha (zero ? 0.11f : 0.04f));
         g.fillRect (plot.getX(), y - 0.5f, plot.getWidth(), 1.0f);
 
-        // EQ scale (yellow) inside the plot at the right edge
+        // EQ scale (yellow) inside the plot at the right edge (not in compact rows: the range box says it)
+        if (compact) continue;
         g.setFont (st::fonts::semibold (10.0f));
         g.setColour (t.curve.withAlpha (zero ? 0.95f : 0.8f));
         const auto label = zero ? juce::String ("0") : (db > 0 ? "+" : "") + juce::String ((int) db);
@@ -711,6 +713,7 @@ void EqDisplay::paintGrid (juce::Graphics& g)
 
     // frequency labels along the bottom of the plot
     g.setFont (st::fonts::medium (10.0f));
+    if (! compact)
     for (float hz : { 20.0f, 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f })
     {
         const float x = xForHz (hz);
@@ -1077,7 +1080,7 @@ juce::Rectangle<float> EqDisplay::getReadoutPart (int band, const juce::String& 
 
 EqDisplay::Part EqDisplay::partAt (juce::Point<float> pos) const
 {
-    if (readoutBand < 0 || compact) return Part::none;
+    if (readoutBand < 0) return Part::none;
     const auto r = readoutLayout (readoutBand);
     if (! r.box.contains (pos)) return Part::none;
     if (r.shape.contains (pos)) return Part::shape;
@@ -1101,7 +1104,7 @@ void EqDisplay::paintReadout (juce::Graphics& g)
     const auto r = readoutLayout (b);
     const auto box = r.box;
     const auto col = bandColour (b);
-    const bool interactive = b == readoutBand && ! compact;
+    const bool interactive = b == readoutBand;
 
     g.setColour (juce::Colours::black.withAlpha (0.35f));
     g.fillRoundedRectangle (box.translated (0.0f, 2.0f), 5.0f);
@@ -1470,7 +1473,7 @@ void EqDisplay::mouseMove (const juce::MouseEvent& e)
     mouseInside = plot.contains (e.position);
 
     // the parameter display stays while the mouse is over it (so its values and buttons can be used)
-    const bool overReadout = readoutBand >= 0 && ! compact && readoutLayout (readoutBand).box.expanded (6.0f).contains (e.position);
+    const bool overReadout = readoutBand >= 0 && readoutLayout (readoutBand).box.expanded (6.0f).contains (e.position);
     const auto part = overReadout ? partAt (e.position) : Part::none;
     if (part != hoverPart) { hoverPart = part; repaint(); }
     int hb = overReadout ? readoutBand : bandAt (e.position);
@@ -1854,8 +1857,13 @@ void EqDisplay::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWhee
     int b = bandAt (e.position);
     juce::Array<int> targets;
     if (b >= 0 && ! selection.contains (b)) targets.add (b);
-    else targets = selection;
-    if (targets.isEmpty()) return;
+    else if (b >= 0 || ! compact) targets = selection;
+    if (targets.isEmpty())
+    {
+        // nothing to adjust here: let the parent (e.g. the instance list) scroll
+        juce::Component::mouseWheelMove (e, w);
+        return;
+    }
 
     const float dy = (std::abs (w.deltaY) > std::abs (w.deltaX) ? w.deltaY : -w.deltaX) * (w.isReversed ? -1.0f : 1.0f);
     const float fine = e.mods.isShiftDown() ? 0.25f : 1.0f;

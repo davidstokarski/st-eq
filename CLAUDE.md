@@ -21,8 +21,8 @@ Plugin-specific notes:
   (`StEqProcessor::anySpectralBand`), so toggling it re-prepares through `applyModeChange` (latency changes).
   UI reads spectral meters via `StEqProcessor::bandMeter`.
 - Instances: `Source/ui/Instances.*` — `InstanceHub` (other instances via `st::InstanceRegistry`, their spectra
-  through the analyser history tap, collisions) and `InstancePanel` (list + inline `EqDisplay (proc, true)` compact
-  editor). Instances can disappear at any time: the registry removes them synchronously on the message thread.
+  through the analyser history tap, collisions) and `InstanceWindow` (separate desktop window: a row per instance with a
+  compact, fully editable `EqDisplay (proc, true)`, hover magnification, zoom / search / pin / track sidebar). Instances can disappear at any time: the registry removes them synchronously on the message thread.
 - EQ Sketch / EQ Match share the band fitter in `Source/dsp/Sketch.*`.
 - UI: `Source/ui/EqDisplay.*` (display + all band interaction), `Source/ui/BandIsland.*` (the floating band
   controls; dynamics expand inline), `Source/ui/Panels.*` (EQ Match and output popovers, bottom bar), `Source/PluginEditor.*`.

@@ -49,43 +49,70 @@ private:
 };
 
 //==============================================================================
-/** Instance list (bottom bar, centre): every ST EQ in the session with its track colour and name, its EQ
-    curve over its spectrum, a red glow when it collides with this instance, a toggle for taking part in
-    the collision display, and inline editing of its EQ (expand a row). */
-class InstancePanel : public st::Popover, private juce::Timer
+/** The instance list window (bottom bar, centre): a separate window with one row per ST EQ in the session —
+    the track's name and colour on the left, its full EQ display (edit any track's bands right there: drag,
+    wheel, menus, parameter display, solo) — and a track sidebar on the right that shows which tracks are in
+    view and scrolls to one on click. The header has a row-size zoom, a search filter, options, the sidebar
+    toggle, full screen and close. The row under the mouse grows a little; rows of tracks that collide with
+    this one glow red; pinned rows stay at the top. */
+class InstanceWindow : public juce::Component, private juce::Timer
 {
 public:
-    InstancePanel (StEqProcessor& own, InstanceHub&, EqDisplay& ownDisplay);
-    ~InstancePanel() override;
+    InstanceWindow (StEqProcessor& own, InstanceHub&);
+    ~InstanceWindow() override;
 
-    static constexpr int panelWidth = 760;
-    int getPanelHeight() const;
-    /** Called when rows are added / removed / expanded (the owner re-positions the popover). */
-    std::function<void()> onHeightChanged;
+    /** Shows the window on the desktop as its own floating window, centred over `near`. */
+    void openOnDesktop (juce::Component* near);
+    /** Called when the user closes the window (the owner deletes it, asynchronously). */
+    std::function<void()> onClose;
 
-    /** Opens the inline editor of `instance` (null closes it). */
-    void expandInstance (st::ProcessorBase* instance) { if (instance != expanded) toggleExpanded (instance == nullptr ? expanded : instance); }
-    bool hasInlineEditor() const;
+    int getNumRows() const noexcept { return (int) rows.size(); }
+    /** The editable display of an instance's row (null if it has none). */
+    EqDisplay* getRowDisplay (st::ProcessorBase*) const;
+    /** Forces the magnified row (tests / renders; normally the row under the mouse). */
+    void setHoveredInstance (st::ProcessorBase* p) { forcedHover = p; }
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
 
     class Row;
-
-protected:
-    void layoutContent (juce::Rectangle<int>) override;
-    void paintContent (juce::Graphics&) override;
+    class Sidebar;
+    class ZoomSlider;
+    class HeaderButton;
 
 private:
     StEqProcessor& own;
     InstanceHub& hub;
-    EqDisplay& ownDisplay;
+    std::vector<std::unique_ptr<Row>> rows;
     juce::Viewport viewport;
     juce::Component holder;
-    std::vector<std::unique_ptr<Row>> rows;
-    st::ProcessorBase* expanded = nullptr;
+    std::unique_ptr<Sidebar> sidebar;
+    std::unique_ptr<ZoomSlider> zoom;
+    std::unique_ptr<HeaderButton> menuButton, sidebarButton, fullButton, closeButton;
+    juce::TextEditor search;
+    juce::ComponentDragger dragger;
+    juce::ComponentBoundsConstrainer constrainer;
+    std::unique_ptr<juce::ResizableCornerComponent> corner;
+    juce::Rectangle<int> normalBounds;
+    bool showSidebar = true, sortByName = false;
+    st::ProcessorBase* forcedHover = nullptr;
+    juce::Array<st::ProcessorBase*> pinned;
+    int ticks = 0;
 
+    static constexpr int headerHeight = 44, sidebarWidth = 150, nameWidth = 150;
+    float baseRowHeight() const;
     void rebuildRows();
-    void toggleExpanded (st::ProcessorBase*);
-    int rowsHeight() const;
+    void layoutRows();
+    void scrollTo (st::ProcessorBase*);
+    void togglePin (st::ProcessorBase*);
+    void showMenu();
+    void toggleFullScreen();
     void timerCallback() override;
+    friend class Row;
+    friend class Sidebar;
 };
 
 } // namespace steq

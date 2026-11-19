@@ -38,7 +38,7 @@ StEqEditor::StEqEditor (StEqProcessor& p)
 
 StEqEditor::~StEqEditor()
 {
-    instancePanel.reset();
+    instanceWindow.reset();
     outputPanel.reset();
     display.setCollisionReference (nullptr);
     matchPopover.reset();
@@ -128,32 +128,21 @@ void StEqEditor::toggleMatch()
     matchPopover->toFront (true);
 }
 
-void StEqEditor::toggleInstances()
+void StEqEditor::toggleInstances (bool onDesktop)
 {
-    if (instancePanel != nullptr) { instancePanel.reset(); hub.onListChanged = [] {}; return; }
+    if (instanceWindow != nullptr) { instanceWindow.reset(); return; }
     outputPanel.reset();
-    instancePanel = std::make_unique<InstancePanel> (proc, hub, display);
-    instancePanel->onClose = [this] { juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<StEqEditor> (this)] { if (safe != nullptr && safe->instancePanel != nullptr) safe->toggleInstances(); }); };
-    instancePanel->onHeightChanged = [this] { placeInstancePanel(); };
-    getContent().addAndMakeVisible (*instancePanel);
-    placeInstancePanel();
-    instancePanel->toFront (true);
-}
-
-void StEqEditor::placeInstancePanel()
-{
-    if (instancePanel == nullptr) return;
-    const int h = instancePanel->getPanelHeight();
-    const int w = InstancePanel::panelWidth;
-    const auto c = footer.getInstancesButtonBounds().getCentreX();
-    const int x = juce::jlimit (8, designWidth - w - 8, c - w / 2);
-    instancePanel->setBounds (x - InstancePanel::margin, displayHeight - 6 - h - InstancePanel::margin, w + 2 * InstancePanel::margin, h + 2 * InstancePanel::margin);
+    instanceWindow = std::make_unique<InstanceWindow> (proc, hub);
+    instanceWindow->onClose = [this]
+    {
+        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<StEqEditor> (this)] { if (safe != nullptr) safe->instanceWindow.reset(); });
+    };
+    if (onDesktop) instanceWindow->openOnDesktop (this);
 }
 
 void StEqEditor::toggleOutput()
 {
     if (outputPanel != nullptr) { outputPanel.reset(); return; }
-    if (instancePanel != nullptr) toggleInstances();
     outputPanel = std::make_unique<OutputPanel> (proc);
     outputPanel->onClose = [this] { juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<StEqEditor> (this)] { if (safe != nullptr) safe->outputPanel.reset(); }); };
     getContent().addAndMakeVisible (*outputPanel);
@@ -173,7 +162,7 @@ float StEqEditor::targetPanelX() const
 void StEqEditor::animate (double dt)
 {
     // other instances: spectra + collisions (only while something shows them)
-    hub.update (dt, display.getSpectrum (1), instancePanel != nullptr || matchPopover != nullptr || display.getAnalyzer().collisions);
+    hub.update (dt, display.getSpectrum (1), instanceWindow != nullptr || matchPopover != nullptr || display.getAnalyzer().collisions);
     display.setCollisionReference (hub.getReference());
 
     if (panel != nullptr)
