@@ -69,10 +69,11 @@ namespace
     /** "12 dB" box at the top of the EQ scale: yellow text on a dark box; click for the range menu. */
     struct RangeBox : juce::Component, juce::SettableTooltipClient
     {
-        std::function<int()> getIndex;
-        std::function<void (int)> setIndex;
+        std::function<int()> getIndex;        // fixed choice, -1 = auto
+        std::function<void (int)> setIndex;   // -1 = auto
+        std::function<float()> getRange;
 
-        RangeBox() { setTooltip ("EQ display range"); setMouseCursor (juce::MouseCursor::PointingHandCursor); }
+        RangeBox() { setTooltip ("EQ display range: Auto follows your bands (3 to 30 dB), or pick a fixed range"); setMouseCursor (juce::MouseCursor::PointingHandCursor); }
 
         void paint (juce::Graphics& g) override
         {
@@ -84,18 +85,20 @@ namespace
             g.drawRoundedRectangle (r, 3.0f, 1.0f);
             g.setFont (st::fonts::semibold (10.5f));
             g.setColour (t.curve);
-            g.drawText (juce::String ((int) EqDisplay::displayRanges[getIndex()]) + " dB", r, juce::Justification::centred, false);
+            g.drawText (juce::String (juce::roundToInt (getRange())) + " dB", r, juce::Justification::centred, false);
         }
         void mouseEnter (const juce::MouseEvent&) override { repaint(); }
         void mouseExit (const juce::MouseEvent&) override { repaint(); }
         void mouseDown (const juce::MouseEvent&) override
         {
             juce::PopupMenu m;
+            m.addItem (100, "Auto", true, getIndex() < 0);
+            m.addSeparator();
             for (int i = 0; i < 4; ++i)
                 m.addItem (i + 1, juce::String ((int) EqDisplay::displayRanges[i]) + " dB", true, getIndex() == i);
             st::showMenu (m, this, [safe = juce::Component::SafePointer<RangeBox> (this)] (int r)
             {
-                if (safe != nullptr && r > 0) { safe->setIndex (r - 1); safe->repaint(); }
+                if (safe != nullptr && r > 0) { safe->setIndex (r == 100 ? -1 : r - 1); safe->repaint(); }
             });
         }
     };
@@ -108,6 +111,8 @@ EqDisplay::EqDisplay (StEqProcessor& p, bool isCompact) : proc (p), compact (isC
     analyzer.load (proc.uiState);
     if (compact) { analyzer.pre = false; analyzer.post = true; analyzer.sidechain = false; analyzer.freeze = false; analyzer.grab = false; }
     rangeIndex = juce::jlimit (0, 3, (int) proc.uiState.getProperty ("range", 2));
+    autoRange = compact || (bool) proc.uiState.getProperty ("autoRange", true);
+    displayRange = rangeTarget = autoRange ? 12.0f : displayRanges[rangeIndex];
     createAnalyzers();
 
     sketchButton.setMinimal (true);
@@ -131,8 +136,9 @@ EqDisplay::EqDisplay (StEqProcessor& p, bool isCompact) : proc (p), compact (isC
     addAndMakeVisible (pianoButton);
 
     auto rb = std::make_unique<RangeBox>();
-    rb->getIndex = [this] { return rangeIndex; };
-    rb->setIndex = [this] (int i) { setDisplayRange (i); };
+    rb->getIndex = [this] { return autoRange ? -1 : rangeIndex; };
+    rb->setIndex = [this] (int i) { if (i < 0) setAutoRange(); else setDisplayRange (i); };
+    rb->getRange = [this] { return displayRange; };
     rangeBox = std::move (rb);
     addAndMakeVisible (*rangeBox);
     if (compact) { sketchButton.setVisible (false); pianoButton.setVisible (false); piano = false; }
@@ -193,12 +199,80 @@ void EqDisplay::setAnalyzer (const AnalyzerSettings& a)
 void EqDisplay::setDisplayRange (int index)
 {
     rangeIndex = juce::jlimit (0, 3, index);
-    if (! compact) proc.uiState.setProperty ("range", rangeIndex, nullptr);
+    autoRange = false;
+    if (! compact) { proc.uiState.setProperty ("range", rangeIndex, nullptr); proc.uiState.setProperty ("autoRange", false, nullptr); }
+    displayRange = rangeTarget = displayRanges[rangeIndex];
+    rangeChanged();
+    if (onRangeChanged) onRangeChanged (rangeIndex);
+}
+
+void EqDisplay::setAutoRange()
+{
+    autoRange = true;
+    if (! compact) proc.uiState.setProperty ("autoRange", true, nullptr);
+    readParameters();
+    rebuildCurves();
+    rangeTarget = autoRangeTarget();
+    if (onRangeChanged) onRangeChanged (-1);
+    if (rangeBox != nullptr) rangeBox->repaint();
+}
+
+void EqDisplay::rangeChanged()
+{
     gridDirty = curvesDirty = true;
     curveLayer = {};
-    if (onRangeChanged) onRangeChanged (rangeIndex);
     if (rangeBox != nullptr) rangeBox->repaint();
     repaint();
+}
+
+float EqDisplay::autoRangeTarget() const
+{
+    // what has to fit: every gain node and its dynamic range, and their summed curve (overlapping bands add up)
+    float need = 0.0f;
+    for (const auto& p : bands)
+    {
+        if (! p.used || ! st::dsp::eq::hasGain (p.shape)) continue;
+        need = juce::jmax (need, std::abs (p.gain * gainScale));
+        if (p.isDynamic()) need = juce::jmax (need, std::abs ((p.gain + p.dynRange) * gainScale));
+    }
+    // the combined curve of the gain shapes (bells, shelves, tilts) where they overlap; cuts, notches and band
+    // passes always fall off the bottom, so they don't count
+    for (int i = 0; i < kPoints; ++i)
+    {
+        if (freqs[(size_t) i] < 20.0f || freqs[(size_t) i] > 20000.0f) continue;
+        float sum = 0.0f;
+        for (int b = 0; b < kMaxBands; ++b)
+        {
+            const auto& p = bands[(size_t) b];
+            if (p.isActive() && st::dsp::eq::hasGain (p.shape) && curves[(size_t) b].valid) sum += curves[(size_t) b].db[(size_t) i];
+        }
+        need = juce::jmax (need, std::abs (sum));
+    }
+    // a little headroom so nodes don't sit on the edge
+    return juce::jlimit (minRange, maxRange, need * 1.15f + 0.5f);
+}
+
+bool EqDisplay::advanceRange (double seconds)
+{
+    float target = autoRange ? autoRangeTarget() : displayRanges[rangeIndex];
+    if (autoRange)
+    {
+        const bool dragging = drag == Drag::bands || drag == Drag::dynRange || drag == Drag::value;
+        if (target < rangeTarget)
+        {
+            // shrink only when the bands fit comfortably in a smaller view, and never mid-drag
+            if (dragging || target > rangeTarget * 0.85f) target = rangeTarget;
+        }
+    }
+    rangeTarget = target;
+    if (std::abs (displayRange - rangeTarget) < 0.01f)
+    {
+        if (! juce::exactlyEqual (displayRange, rangeTarget)) { displayRange = rangeTarget; rangeChanged(); return true; }
+        return false;
+    }
+    displayRange += (rangeTarget - displayRange) * (float) (1.0 - std::exp (-seconds * 9.0));
+    rangeChanged();
+    return true;
 }
 
 void EqDisplay::setSketchMode (bool on)
@@ -226,13 +300,13 @@ float EqDisplay::hzForX (float x) const noexcept
 
 float EqDisplay::yForDb (float db) const noexcept
 {
-    const float r = displayRanges[rangeIndex];
+    const float r = displayRange;
     return eqArea.getCentreY() - db / r * eqArea.getHeight() * 0.5f;
 }
 
 float EqDisplay::dbForY (float y) const noexcept
 {
-    const float r = displayRanges[rangeIndex];
+    const float r = displayRange;
     return (eqArea.getCentreY() - y) / (eqArea.getHeight() * 0.5f) * r;
 }
 
@@ -543,6 +617,16 @@ void EqDisplay::frame (double dt)
     if (layersChanged) curvesDirty = true;
     if (curvesDirty) { rebuildCurves(); curveLayer = {}; changed = true; }
 
+    // EQ scale: follows the bands (auto) or the fixed choice, animated
+    if (! rangeReady)
+    {
+        rangeReady = true;
+        displayRange = rangeTarget = autoRange ? autoRangeTarget() : displayRanges[rangeIndex];
+        rangeChanged();
+        changed = true;
+    }
+    else if (advanceRange (dt)) changed = true;
+
     // analyzer
     const bool frozen = grabFrozen;   // Freeze keeps the live analyser running and builds a maximum (below)
     if (! frozen)
@@ -694,9 +778,9 @@ void EqDisplay::paintGrid (juce::Graphics& g)
         }
 
     // dB lines over the whole plot width; 0 dB brighter
-    const float r = displayRanges[rangeIndex];
-    const float step = rangeIndex == 0 ? 1.0f : (rangeIndex == 1 ? 2.0f : (rangeIndex == 2 ? 3.0f : 6.0f));
-    for (float db = -r; db <= r + 0.01f; db += step)
+    const float r = displayRange;
+    const float step = r <= 4.5f ? 1.0f : (r <= 9.0f ? 2.0f : (r <= 18.0f ? 3.0f : 6.0f));
+    for (float db = -std::floor (r / step + 0.001f) * step; db <= r + 0.01f; db += step)
     {
         const float y = std::round (yForDb (db)) + 0.5f;
         const bool zero = std::abs (db) < 0.01f;
@@ -831,7 +915,7 @@ void EqDisplay::paintCurves (juce::Graphics& g)
 {
     const auto& t = st::Theme::get();
     const float y0 = yForDb (0.0f);
-    const float r = displayRanges[rangeIndex];
+    const float r = displayRange;
     auto clampDb = [r] (float db) { return juce::jlimit (-r * 6.0f, r * 2.0f, db); };   // far enough to leave the plot (clipped)
     auto pathOf = [&] (const std::array<float, kPoints>& db)
     {
@@ -940,7 +1024,7 @@ void EqDisplay::paintPreview (juce::Graphics& g)
     const auto a = st::dsp::eq::designAnalog (makeSpec (b, 1.0f));
 
     juce::Path path;
-    const float r = displayRanges[rangeIndex];
+    const float r = displayRange;
     for (int i = 0; i < kPoints; i += 2)
     {
         const float y = yForDb (juce::jlimit (-r * 1.6f, r * 1.6f, (float) a.magnitudeDb (freqs[(size_t) i])));
@@ -1363,7 +1447,7 @@ Shape EqDisplay::shapeForPosition (juce::Point<float> pos, bool fromCurve) const
         return hz < 45.0f ? Shape::lowShelf : (hz > 11000.0f ? Shape::highShelf : Shape::bell);
     if (hz < 22.0f) return Shape::lowCut;
     if (hz > 17000.0f) return Shape::highCut;
-    if (dbForY (pos.y) < -displayRanges[rangeIndex] * 1.08f) return Shape::notch;
+    if (dbForY (pos.y) < -displayRange * 1.08f) return Shape::notch;
     return Shape::bell;
 }
 
@@ -1391,6 +1475,8 @@ void EqDisplay::beginBandDrag (const juce::MouseEvent& e)
 {
     drag = Drag::bands;
     dragStart = e.position;
+    dragDbAccum = 0.0f;
+    lastDragY = e.position.y;
     axisLocked = false;
     dragStarts.clear();
     proc.undoManager.beginNewTransaction ("Move bands");
@@ -1419,8 +1505,13 @@ void EqDisplay::applyBandDrag (const juce::MouseEvent& e)
 
     const float octPerPx = std::log2 (maxHz / minHz) / juce::jmax (1.0f, plot.getWidth());
     const float ratio = std::exp2 (dx * octPerPx);
-    const float pxPerDb = eqArea.getHeight() * 0.5f / displayRanges[rangeIndex];
-    const float dDb = -dy / pxPerDb;
+    // vertical: accumulate dB from each mouse step at the scale shown at that moment, so a scale that grows
+    // while you drag past the edge never feeds back into the gain
+    const float pxPerDb = eqArea.getHeight() * 0.5f / displayRange;
+    dragDbAccum -= (e.position.y - lastDragY) * fine / pxPerDb;
+    lastDragY = e.position.y;
+    if (std::abs (dy) < 0.001f) dragDbAccum = 0.0f;   // axis locked horizontally, or back at the start
+    const float dDb = dragDbAccum;
     const bool qMode = e.mods.isCommandDown();
 
     const bool snap = piano && ! e.mods.isShiftDown();
@@ -1619,6 +1710,8 @@ void EqDisplay::mouseDown (const juce::MouseEvent& e)
     {
         if (! selection.contains (dh)) select (dh);
         drag = Drag::dynRange;
+        dragDbAccum = 0.0f;
+        lastDragY = e.position.y;
         dragStarts = { { dh, bands[(size_t) dh].freq, bands[(size_t) dh].gain, bands[(size_t) dh].q, bands[(size_t) dh].dynRange, bands[(size_t) dh] } };
         proc.undoManager.beginNewTransaction ("Dynamic range");
         beginGesture (dh, "dyn_range");
@@ -1764,10 +1857,12 @@ void EqDisplay::mouseDrag (const juce::MouseEvent& e)
         case Drag::dynRange:
         {
             const auto& s = dragStarts.front();
-            const float pxPerDb = eqArea.getHeight() * 0.5f / displayRanges[rangeIndex];
+            const float pxPerDb = eqArea.getHeight() * 0.5f / displayRange;
             const float fine = e.mods.isShiftDown() ? 0.15f : 1.0f;
             const float scale = std::abs (gainScale) > 0.01f ? gainScale : 1.0f;
-            setPlain (s.band, "dyn_range", juce::jlimit (-30.0f, 30.0f, s.range - (e.position.y - dragStart.y) * fine / pxPerDb / scale));
+            dragDbAccum -= (e.position.y - lastDragY) * fine / pxPerDb / scale;
+            lastDragY = e.position.y;
+            setPlain (s.band, "dyn_range", juce::jlimit (-30.0f, 30.0f, s.range + dragDbAccum));
             break;
         }
 
@@ -2003,8 +2098,10 @@ void EqDisplay::showBackgroundMenu()
     menu.addSeparator();
     menu.addItem (juce::PopupMenu::Item ("EQ Sketch").setAction ([this] { setSketchMode (true); }));
     menu.addItem (juce::PopupMenu::Item ("EQ Match...").setAction ([this] { if (onMatchRequested) onMatchRequested(); }));
+    range.addItem (juce::PopupMenu::Item ("Auto").setTicked (autoRange).setAction ([this] { setAutoRange(); }));
+    range.addSeparator();
     for (int i = 0; i < 4; ++i)
-        range.addItem (juce::PopupMenu::Item (juce::String ((int) displayRanges[i]) + " dB").setTicked (rangeIndex == i).setAction ([this, i] { setDisplayRange (i); }));
+        range.addItem (juce::PopupMenu::Item (juce::String ((int) displayRanges[i]) + " dB").setTicked (! autoRange && rangeIndex == i).setAction ([this, i] { setDisplayRange (i); }));
     menu.addSubMenu ("Display Range", range);
     st::showMenu (menu, nullptr, {}, true);
 }

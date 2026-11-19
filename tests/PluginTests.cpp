@@ -679,6 +679,61 @@ static void testInteraction (StEqProcessor& p)
         check (! d.isSketchMode() && std::abs (at1k - 6.0f) < 1.5f, "sketch: drawn bump becomes the curve (" + juce::String (at1k, 2) + " dB at 1 kHz)");
     }
 
+    // automatic EQ scale: fits the bands (3..30 dB), grows while dragging past the edge, shrinks after
+    clearBands (p);
+    d.setAutoRange();
+    {
+        auto settle = [&] { d.syncFromParameters(); for (int i = 0; i < 90; ++i) d.advanceRange (1.0 / 30.0); return d.getDisplayRangeDb(); };
+        const int rb = p.addBand (Shape::bell, 1000.0f, 2.0f, 1.0f);
+        check (std::abs (settle() - 3.0f) < 0.05f, "auto range: small gains -> 3 dB (" + juce::String (d.getDisplayRangeDb(), 2) + ")");
+        p.setBandValue (rb, "gain", 10.0f);
+        const float r10 = settle();
+        check (r10 > 10.5f && r10 < 13.0f, "auto range: +10 dB node fits with headroom (" + juce::String (r10, 2) + ")");
+        p.setBandValue (rb, "gain", 29.0f);
+        check (std::abs (settle() - 30.0f) < 0.05f, "auto range caps at 30 dB");
+        p.setBandValue (rb, "gain", 2.0f);
+        check (std::abs (settle() - 3.0f) < 0.05f, "auto range shrinks back to 3 dB");
+        const int cut = p.addBand (Shape::lowCut, 80.0f, 0.0f, 0.71f, 6);
+        check (std::abs (settle() - 3.0f) < 0.05f, "auto range ignores a cut filter's slope");
+        p.removeBand (cut);
+
+        // drag the node up past the top of the scale: the scale grows during the drag (never shrinks mid-drag)
+        p.setBandValue (rb, "gain", 2.5f);
+        settle();
+        d.select (rb);
+        const MK lb (MK::leftButtonModifier);
+        auto pos = d.dotPosition (rb);
+        m.down = pos;
+        d.mouseMove (m.ev (pos, {}));
+        d.mouseDown (m.ev (pos, lb));
+        float maxRange = d.getDisplayRangeDb();
+        bool shrankMidDrag = false;
+        for (int i = 1; i <= 40; ++i)
+        {
+            pos.y -= 4.0f;
+            d.mouseDrag (m.ev (pos, lb, 1, true));
+            d.syncFromParameters();
+            for (int k = 0; k < 3; ++k) d.advanceRange (1.0 / 60.0);
+            maxRange = juce::jmax (maxRange, d.getDisplayRangeDb());
+        }
+        for (int i = 1; i <= 10; ++i)   // back down a little: still dragging, the scale holds
+        {
+            const float rangeBefore = d.getDisplayRangeDb();
+            pos.y += 6.0f;
+            d.mouseDrag (m.ev (pos, lb, 1, true));
+            d.syncFromParameters();
+            d.advanceRange (1.0 / 30.0);
+            shrankMidDrag |= d.getDisplayRangeDb() < rangeBefore - 0.01f;
+        }
+        d.mouseUp (m.ev (pos, {}, 1, true));
+        const float dragged = p.getBand (rb).gain;
+        check (maxRange > 3.5f && dragged > 3.0f, "dragging past the edge grows the scale (" + juce::String (maxRange, 2) + " dB, node at " + juce::String (dragged, 2) + " dB)");
+        check (! shrankMidDrag, "the scale doesn't shrink during a drag");
+        p.setBandValue (rb, "gain", 1.0f);
+        check (std::abs (settle() - 3.0f) < 0.05f, "after the drag the scale shrinks to fit again");
+    }
+    d.setDisplayRange (2);
+
     // parameter display: hover the dot, then use its values and buttons
     clearBands (p);
     d.syncFromParameters();

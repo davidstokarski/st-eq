@@ -47,7 +47,8 @@ macOS (Apple Silicon + Intel). Built on [st-shell](https://github.com/davidstoka
 - Character modes (Clean / Subtle / Warm), global bypass (latency compensated), output panel (gain with pan ring,
   left/right or mid/side pan, Gain Scale, Auto Gain, polarity), output meter; channel curves in colour
   (left white, right red, mid green, side blue)
-- Display ranges 3 / 6 / 12 / 30 dB, presets, A/B, undo / redo, copy / paste bands, resizable UI, native menus
+- Automatic EQ scale: fits your bands (3–30 dB), grows while you drag a node past the edge and shrinks back when
+  there's room (or pick a fixed 3 / 6 / 12 / 30 dB); presets, A/B, undo / redo, copy / paste bands, resizable UI, native menus
 
 ## Mouse and keys
 

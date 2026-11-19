@@ -52,9 +52,19 @@ public:
     std::function<void (double dt)> onFrame;
 
     // settings
-    void setDisplayRange (int index);              // 0..3 -> 3 / 6 / 12 / 30 dB
-    int getDisplayRange() const noexcept { return rangeIndex; }
+    /** EQ scale. Auto (default): fits the bands and the curve with some headroom, between 3 and 30 dB; grows
+        while a node is dragged past the edge and shrinks back once there's room (after the drag). Or fixed. */
+    void setDisplayRange (int index);              // fixed: 0..3 -> 3 / 6 / 12 / 30 dB
+    void setAutoRange();
+    bool isAutoRange() const noexcept { return autoRange; }
+    /** Current scale (+/- dB at the edge of the EQ area), animated. */
+    float getDisplayRangeDb() const noexcept { return displayRange; }
     static const float displayRanges[4];
+    static constexpr float minRange = 3.0f, maxRange = 30.0f;
+    /** The scale the auto range aims for with the current bands (before animation). */
+    float autoRangeTarget() const;
+    /** Advances the range animation (normally every frame; tests call it directly). Returns true if it moved. */
+    bool advanceRange (double seconds);
     void setAnalyzer (const AnalyzerSettings&);
     const AnalyzerSettings& getAnalyzer() const noexcept { return analyzer; }
     void setSketchMode (bool);
@@ -117,7 +127,11 @@ private:
     std::unique_ptr<juce::Component> rangeBox;
     int triggerBand = -1;          // free-trigger range bar (shown while the band's dynamics are expanded)
     float triggerBarY = -1.0f;
-    int rangeIndex = 2;
+    int rangeIndex = 2;              // fixed range choice
+    bool autoRange = true, rangeReady = false;
+    float displayRange = 12.0f, rangeTarget = 12.0f;
+    float dragDbAccum = 0.0f, lastDragY = 0.0f;   // band drags accumulate dB step by step (stable while the scale moves)
+    void rangeChanged();
     static constexpr float minHz = 10.0f, maxHz = 30000.0f;
 
     // --- band state cache (read every frame from the parameters) ---------------------------------
