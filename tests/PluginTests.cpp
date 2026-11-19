@@ -3,6 +3,7 @@
 #include "PluginEditor.h"
 #if JUCE_MAC
  #include <AudioToolbox/AudioToolbox.h>
+ #pragma clang diagnostic ignored "-Wnullable-to-nonnull-conversion"   // AudioToolbox C API in tests
 #endif
 
 using namespace steq;
@@ -808,6 +809,14 @@ static void testInstancesAndOutput (StEqProcessor& p)
         { juce::Graphics g (wimg); mv->paintEntireComponent (g, true); }
     }
     e->openOutput();
+    {
+        const bool was = e->areTooltipsEnabled();
+        e->setTooltipsEnabled (false);
+        check (! e->areTooltipsEnabled(), "tooltips can be switched off");
+        e->setTooltipsEnabled (true);
+        check (e->areTooltipsEnabled(), "tooltips can be switched on");
+        e->setTooltipsEnabled (was);
+    }
     ed.reset();
 
     // global bypass: output = input delayed by the latency (linear phase), even with bands
@@ -1227,7 +1236,8 @@ struct SnapshotApp : juce::JUCEApplicationBase
                 AudioComponentDescription d {};
                 d.componentType = kAudioUnitType_Effect; d.componentSubType = 'Stst'; d.componentManufacturer = 'StAu';
                 AudioUnit au = nullptr;
-                if (auto c = AudioComponentFindNext (nullptr, &d); c != nullptr && AudioComponentInstanceNew (c, &au) == noErr)
+                AudioComponent c = AudioComponentFindNext (nullptr, &d);
+                if (c != nullptr && AudioComponentInstanceNew (c, &au) == noErr)
                 {
                     CFStringRef n = juce::String (track).toCFString();
                     AudioUnitSetProperty (au, kAudioUnitProperty_ContextName, kAudioUnitScope_Global, 0, &n, sizeof (n));
