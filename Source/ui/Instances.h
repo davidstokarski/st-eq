@@ -49,11 +49,11 @@ private:
 };
 
 //==============================================================================
-/** The instance list window (bottom bar, centre): a separate window with one row per ST EQ in the session —
+/** The instance list (bottom bar, centre): covers the whole plugin window, with one row per ST EQ in the session —
     the track's name and colour on the left, its full EQ display (edit any track's bands right there: drag,
     wheel, menus, parameter display, solo) — and a track sidebar on the right that shows which tracks are in
     view and scrolls to one on click. The header has a row-size zoom, a search filter, options, the sidebar
-    toggle, full screen and close. The row under the mouse grows a little; rows of tracks that collide with
+    toggle and close (back to the EQ; Esc too). The row under the mouse grows a little; rows of tracks that collide with
     this one glow red; pinned rows stay at the top. */
 class InstanceWindow : public juce::Component, private juce::Timer
 {
@@ -61,9 +61,7 @@ public:
     InstanceWindow (StEqProcessor& own, InstanceHub&);
     ~InstanceWindow() override;
 
-    /** Shows the window on the desktop as its own floating window, centred over `near`. */
-    void openOnDesktop (juce::Component* near);
-    /** Called when the user closes the window (the owner deletes it, asynchronously). */
+    /** Called when the user closes the list (the owner deletes it, asynchronously). */
     std::function<void()> onClose;
 
     int getNumRows() const noexcept { return (int) rows.size(); }
@@ -74,8 +72,6 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
-    void mouseDown (const juce::MouseEvent&) override;
-    void mouseDrag (const juce::MouseEvent&) override;
     bool keyPressed (const juce::KeyPress&) override;
 
     class Row;
@@ -91,12 +87,8 @@ private:
     juce::Component holder;
     std::unique_ptr<Sidebar> sidebar;
     std::unique_ptr<ZoomSlider> zoom;
-    std::unique_ptr<HeaderButton> menuButton, sidebarButton, fullButton, closeButton;
+    std::unique_ptr<HeaderButton> menuButton, sidebarButton, closeButton;
     juce::TextEditor search;
-    juce::ComponentDragger dragger;
-    juce::ComponentBoundsConstrainer constrainer;
-    std::unique_ptr<juce::ResizableCornerComponent> corner;
-    juce::Rectangle<int> normalBounds;
     bool showSidebar = true, sortByName = false;
     st::ProcessorBase* forcedHover = nullptr;
     juce::Array<st::ProcessorBase*> pinned;
@@ -109,7 +101,6 @@ private:
     void scrollTo (st::ProcessorBase*);
     void togglePin (st::ProcessorBase*);
     void showMenu();
-    void toggleFullScreen();
     void timerCallback() override;
     friend class Row;
     friend class Sidebar;

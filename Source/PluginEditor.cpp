@@ -128,16 +128,20 @@ void StEqEditor::toggleMatch()
     matchPopover->toFront (true);
 }
 
-void StEqEditor::toggleInstances (bool onDesktop)
+void StEqEditor::toggleInstances()
 {
-    if (instanceWindow != nullptr) { instanceWindow.reset(); return; }
+    if (instanceWindow != nullptr) { instanceWindow.reset(); display.grabKeyboardFocus(); return; }
     outputPanel.reset();
+    matchPopover.reset();
     instanceWindow = std::make_unique<InstanceWindow> (proc, hub);
     instanceWindow->onClose = [this]
     {
-        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<StEqEditor> (this)] { if (safe != nullptr) safe->instanceWindow.reset(); });
+        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<StEqEditor> (this)] { if (safe != nullptr && safe->instanceWindow != nullptr) safe->toggleInstances(); });
     };
-    if (onDesktop) instanceWindow->openOnDesktop (this);
+    // covers the whole plugin window (header and bottom bar included) until closed
+    getContent().addAndMakeVisible (*instanceWindow);
+    instanceWindow->setBounds (getContent().getLocalBounds());
+    instanceWindow->toFront (true);
 }
 
 void StEqEditor::toggleOutput()
@@ -204,6 +208,7 @@ void StEqEditor::layout (juce::Rectangle<int>)
 {
     auto all = getContent().getLocalBounds();
     display.setBounds (all.withHeight (displayHeight));
+    if (instanceWindow != nullptr) instanceWindow->setBounds (all);
     footer.setBounds (all.removeFromBottom (footerHeight));
     panelX.snap (targetPanelX());
     animate (0.0);

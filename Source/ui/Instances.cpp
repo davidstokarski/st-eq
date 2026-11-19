@@ -391,21 +391,15 @@ InstanceWindow::InstanceWindow (StEqProcessor& o, InstanceHub& h) : own (o), hub
 
     menuButton = std::make_unique<HeaderButton> (HeaderButton::Glyph::dots, "Options");
     sidebarButton = std::make_unique<HeaderButton> (HeaderButton::Glyph::sidebar, "Show / hide the track list");
-    fullButton = std::make_unique<HeaderButton> (HeaderButton::Glyph::fullScreen, "Full screen");
-    closeButton = std::make_unique<HeaderButton> (HeaderButton::Glyph::close, "Close");
+    closeButton = std::make_unique<HeaderButton> (HeaderButton::Glyph::close, "Back to the EQ (Esc)");
     menuButton->onClick = [this] { showMenu(); };
     sidebarButton->onClick = [this] { showSidebar = ! showSidebar; resized(); };
-    fullButton->onClick = [this] { toggleFullScreen(); };
     closeButton->onClick = [this] { if (onClose) onClose(); };
-    for (auto* b : { menuButton.get(), sidebarButton.get(), fullButton.get(), closeButton.get() }) addAndMakeVisible (*b);
-
-    constrainer.setMinimumSize (720, 360);
-    corner = std::make_unique<juce::ResizableCornerComponent> (this, &constrainer);
-    addAndMakeVisible (*corner);
+    for (auto* b : { menuButton.get(), sidebarButton.get(), closeButton.get() }) addAndMakeVisible (*b);
 
     hub.onListChanged = [this] { rebuildRows(); };
     rebuildRows();
-    setSize (1120, 720);
+    setSize (1040, 620);
     startTimerHz (60);
 }
 
@@ -414,20 +408,6 @@ InstanceWindow::~InstanceWindow()
     hub.onListChanged = [] {};
     stopTimer();
     rows.clear();
-}
-
-void InstanceWindow::openOnDesktop (juce::Component* near)
-{
-    addToDesktop (juce::ComponentPeer::windowHasDropShadow | juce::ComponentPeer::windowAppearsOnTaskbar);
-    if (near != nullptr)
-    {
-        const auto c = near->getScreenBounds().getCentre();
-        const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForPoint (c.toFloat())->userBounds.toNearestInt();
-        setBounds (getLocalBounds().withCentre (c).constrainedWithin (area));
-    }
-    setAlwaysOnTop (true);
-    setVisible (true);
-    toFront (true);
 }
 
 float InstanceWindow::baseRowHeight() const
@@ -515,14 +495,6 @@ void InstanceWindow::showMenu()
     st::showMenu (m, menuButton.get());
 }
 
-void InstanceWindow::toggleFullScreen()
-{
-    if (! isOnDesktop()) return;
-    const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (getScreenBounds())->userBounds.toNearestInt();
-    if (getBounds() == area && ! normalBounds.isEmpty()) setBounds (normalBounds);
-    else { normalBounds = getBounds(); setBounds (area); }
-}
-
 EqDisplay* InstanceWindow::getRowDisplay (st::ProcessorBase* p) const
 {
     for (auto& r : rows)
@@ -536,8 +508,6 @@ void InstanceWindow::resized()
     auto header = r.removeFromTop (headerHeight).reduced (14, 8);
     closeButton->setBounds (header.removeFromRight (26));
     header.removeFromRight (6);
-    fullButton->setBounds (header.removeFromRight (26));
-    header.removeFromRight (6);
     sidebarButton->setBounds (header.removeFromRight (26));
     sidebarButton->setToggleState (showSidebar, juce::dontSendNotification);
 
@@ -549,7 +519,6 @@ void InstanceWindow::resized()
     sidebar->setVisible (showSidebar);
     if (showSidebar) sidebar->setBounds (r.removeFromRight (sidebarWidth));
     viewport.setBounds (r.reduced (8, 0).withTrimmedBottom (8));
-    corner->setBounds (getWidth() - 16, getHeight() - 16, 16, 16);
     layoutRows();
 }
 
@@ -579,18 +548,6 @@ void InstanceWindow::paint (juce::Graphics& g)
         g.setColour (juce::Colours::white.withAlpha (0.05f));
         g.fillRect ((float) getWidth() - (float) sidebarWidth, (float) headerHeight, 1.0f, (float) (getHeight() - headerHeight));
     }
-    g.setColour (juce::Colours::white.withAlpha (0.08f));
-    g.drawRect (getLocalBounds(), 1);
-}
-
-void InstanceWindow::mouseDown (const juce::MouseEvent& e)
-{
-    if (e.y < headerHeight && isOnDesktop()) dragger.startDraggingComponent (this, e);
-}
-
-void InstanceWindow::mouseDrag (const juce::MouseEvent& e)
-{
-    if (e.mouseDownPosition.y < (float) headerHeight && isOnDesktop()) dragger.dragComponent (this, e, nullptr);
 }
 
 bool InstanceWindow::keyPressed (const juce::KeyPress& k)

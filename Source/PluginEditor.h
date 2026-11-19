@@ -19,8 +19,8 @@ public:
     steq::BandPanel* getBandPanel() noexcept { return panel.get(); }
     void openDynamicsPopover() { if (panel != nullptr) panel->setExpanded (true); }
     void openMatch() { if (matchPopover == nullptr) toggleMatch(); }
-    /** Opens the instance list window (onDesktop false: as a plain component, for tests / renders). */
-    void openInstances (bool onDesktop = true) { if (instanceWindow == nullptr) toggleInstances (onDesktop); }
+    /** Opens the instance list (covers the whole plugin window). */
+    void openInstances() { if (instanceWindow == nullptr) toggleInstances(); }
     void openOutput() { if (outputPanel == nullptr) toggleOutput(); }
     steq::InstanceHub& getInstanceHub() noexcept { return hub; }
     steq::InstanceWindow* getInstanceWindow() noexcept { return instanceWindow.get(); }
@@ -44,6 +44,6 @@ private:
     float targetPanelX() const;
     void stepBand (int direction);
     void toggleMatch();
-    void toggleInstances (bool onDesktop = true);
+    void toggleInstances();
     void toggleOutput();
 };

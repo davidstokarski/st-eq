@@ -32,9 +32,9 @@ macOS (Apple Silicon + Intel). Built on [st-shell](https://github.com/davidstoka
   create one, or the band menu) and each frequency inside it is compressed / expanded on its own — resonances that
   come and go are tamed without touching the rest of the band. Density and Tilt in the expanded section;
   linear phase (adds the processing resolution's FFT size of latency)
-- **Instance list window** (centre of the bottom bar): every ST EQ in the session in one resizable window — a row per
+- **Instance list** (centre of the bottom bar): every ST EQ in the session, covering the whole plugin window — a row per
   track with its name and colour and its full, editable EQ display (bands, menus, parameter display, solo, bypass);
-  the row under the mouse grows; zoom, search, pinning, a track list that shows what's in view, full screen; rows
+  the row under the mouse grows; zoom, search, pinning, a track list that shows what's in view; rows
   of tracks that collide with this one glow red
 - **Collisions**: where this track and the others are loud at the same frequencies the analyser turns red
 - **Parameter display**: hover a dot for live values (drag, wheel or double-click them) and quick buttons — shape,

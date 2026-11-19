@@ -758,7 +758,7 @@ static void testInstancesAndOutput (StEqProcessor& p)
         other->addBand (Shape::bell, 200.0f, 6.0f, 1.0f);
         bool finite = true;
         runNoise (*other, 40, 512, finite);
-        e->openInstances (false);
+        e->openInstances();
         e->getInstanceHub().update (0.5, e->getDisplay().getSpectrum (1), true);
         const auto& lv = e->getInstanceHub().getOthers()[0]->spectrum->getLevelsDb();
         const float loudest = *std::max_element (lv.begin(), lv.end());
@@ -766,7 +766,9 @@ static void testInstancesAndOutput (StEqProcessor& p)
 
         // instance window: a row (with an editable display) per instance
         auto* win = e->getInstanceWindow();
-        check (win != nullptr && win->getNumRows() == 2, "instance window lists both instances");
+        check (win != nullptr && win->getNumRows() == 2, "instance list lists both instances");
+        check (win != nullptr && win->getParentComponent() != nullptr && win->getBounds() == win->getParentComponent()->getLocalBounds(),
+               "instance list covers the whole plugin window");
         auto* otherDisplay = win->getRowDisplay (other.get());
         check (otherDisplay != nullptr && otherDisplay->isCompact(), "editable display for the other instance");
         if (otherDisplay != nullptr)
@@ -954,15 +956,6 @@ struct Snapshotter : juce::Timer
             juce::PNGImageFormat().writeImageToStream (img, out);
             std::cout << "wrote " << file.getFullPathName() << "\n";
             if (auto* e = dynamic_cast<StEqEditor*> (ed.get()))
-                if (auto* w = e->getInstanceWindow())
-                {
-                    auto wi = w->createComponentSnapshot (w->getLocalBounds(), true, 2.0f);
-                    auto f3 = dir.getChildFile (jobs[index].name + "_window.png");
-                    f3.deleteFile();
-                    juce::FileOutputStream o3 (f3);
-                    juce::PNGImageFormat().writeImageToStream (wi, o3);
-                }
-            if (auto* e = dynamic_cast<StEqEditor*> (ed.get()))
                 if (auto* bp = e->getBandPanel(); bp != nullptr && jobs[index].scale == 1.0f)
                 {
                     auto crop = ed->createComponentSnapshot (bp->getBounds().expanded (6), true, 4.0f);
@@ -1098,10 +1091,9 @@ struct SnapshotApp : juce::JUCEApplicationBase
             };
         }, "12_instances", 1.0f, [this] (StEqEditor& e)
         {
-            e.openInstances (false);
+            e.openInstances();
             if (auto* w = e.getInstanceWindow(); w != nullptr && ! extras.empty())
             {
-                w->setSize (1180, 760);
                 w->setHoveredInstance (extras[0].get());
                 if (auto* d = w->getRowDisplay (extras[0].get()))
                 {
