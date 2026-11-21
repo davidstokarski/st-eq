@@ -325,6 +325,145 @@ static void testSpectral (StEqProcessor& p)
     clearBands (p);
 }
 
+/** Deep check: random single bands of every shape (cuts / shelves up to 0.42 fs, all common slopes, Q 0.4..2.5)
+    in every processing mode at 44.1 and 48 kHz, measured from the real processor against the analog target. */
+static void testResponseSweep (StEqProcessor& p)
+{
+    std::cout << "Response sweep (random bands, all modes, 44.1 / 48 kHz)\n";
+    juce::Random rng (2026);
+    const Shape shapes[] = { Shape::bell, Shape::lowShelf, Shape::highShelf, Shape::lowCut, Shape::highCut, Shape::tiltShelf, Shape::bandPass };
+    struct M { ProcMode mode; const char* name; double tolLow, tolHigh; };
+    for (double fs : { 44100.0, 48000.0 })
+    {
+        p.prepareToPlay (fs, 512);
+        for (auto m : { M { ProcMode::zeroLatency, "ZL", 0.75, 1.4 }, M { ProcMode::naturalPhase, "NP", 0.5, 0.6 }, M { ProcMode::linearPhase, "LP", 0.6, 0.6 } })
+        {
+            setMode (p, m.mode, 1);
+            double worst = 0.0;
+            juce::String worstWhat;
+            for (int trial = 0; trial < 24; ++trial)
+            {
+                clearBands (p);
+                const auto shape = shapes[(size_t) rng.nextInt (7)];
+                const float f = 30.0f * std::pow ((float) (0.42 * fs) / 30.0f, rng.nextFloat());
+                const float g = rng.nextFloat() * 24.0f - 12.0f;
+                const float q = 0.4f * std::pow (2.5f / 0.4f, rng.nextFloat());
+                const int slope = rng.nextInt (7);   // 6..48 dB/oct
+                p.addBand (shape, f, g, q, slope);
+                const int lat = p.getLatencySamples();
+                auto h = impulse (p, juce::nextPowerOfTwo (lat + 16384));
+                for (int k = 0; k < 48; ++k)
+                {
+                    const double hz = 40.0 * std::pow (0.45 * fs / 40.0, k / 47.0);
+                    const double ana = analogDb (p, hz);
+                    if (ana < -12.0) continue;
+                    const double err = std::abs (magAt (h[0], hz, fs) - ana);
+                    // linear phase below 150 Hz: FIR length limits sharp low resonances at Medium resolution
+                    const double tol = hz > 0.2 * fs ? m.tolHigh : (m.mode == ProcMode::linearPhase && hz < 150.0 ? 1.2 : m.tolLow);
+                    if (err / tol > worst)
+                    {
+                        worst = err / tol;
+                        worstWhat = shapeNames[(int) shape] + " " + juce::String (f, 0) + " Hz q " + juce::String (q, 2) + " slope " + juce::String (slope)
+                                  + " gain " + juce::String (g, 1) + " at " + juce::String (hz, 0) + " Hz: " + juce::String (err, 2) + " dB";
+                    }
+                }
+            }
+            check (worst < 1.0, juce::String (m.name) + " @" + juce::String (fs, 0) + ": random bands match analog (worst " + worstWhat + ")");
+            std::cout << "  " << m.name << " @" << fs << ": worst " << worstWhat << "\n";
+        }
+    }
+    p.prepareToPlay (48000.0, 512);
+    setMode (p, ProcMode::zeroLatency);
+    clearBands (p);
+}
+
+/** Deep check: sweeping parameters while audio plays must not click (design changes glide, even when the
+    near-Nyquist correction section comes and goes). Detects jumps by the output's second difference. */
+static void testAutomationClicks (StEqProcessor& p)
+{
+    std::cout << "Automation (no clicks while sweeping)\n";
+    struct Case { const char* what; Shape shape; float sineHz, gain, q; int slope; float f0, f1; bool dynamic; };
+    const Case cases[] = {
+        { "high cut 24 dB/oct Q1 swept 21k..9k", Shape::highCut, 12000.0f, 0.0f, 1.0f, 3, 21000.0f, 9000.0f, false },
+        { "high cut 48 dB/oct swept 20k..2k", Shape::highCut, 3000.0f, 0.0f, 0.71f, 6, 20000.0f, 2000.0f, false },
+        { "high shelf +9 dB swept 19k..6k", Shape::highShelf, 10000.0f, 9.0f, 0.71f, 1, 19000.0f, 6000.0f, false },
+        { "bell +12 dB Q2 swept 19k..5k", Shape::bell, 9000.0f, 12.0f, 2.0f, 1, 19000.0f, 5000.0f, false },
+        { "dynamic bell 16k", Shape::bell, 15000.0f, 0.0f, 1.5f, 1, 16000.0f, 16000.0f, true },
+    };
+    for (double fs : { 44100.0, 48000.0 })
+    {
+        p.prepareToPlay (fs, 512);
+        setMode (p, ProcMode::zeroLatency);
+        for (const auto& c : cases)
+        {
+            clearBands (p);
+            const int b = p.addBand (c.shape, c.f0, c.gain, c.q, c.slope);
+            if (c.dynamic) { setParam (p, ids::band (b, "dyn_range"), -12.0f); setParam (p, ids::band (b, "dyn_auto"), 0.0f); setParam (p, ids::band (b, "dyn_thresh"), -40.0f); }
+            juce::AudioBuffer<float> buf (2, 64);
+            juce::MidiBuffer midi;
+            double phase = 0.0, worst = 0.0, prev1 = 0.0, prev2 = 0.0;
+            bool finite = true;
+            const int blocks = (int) (2.0 * fs / 64);
+            for (int blk = 0; blk < blocks; ++blk)
+            {
+                const float t = (float) blk / (float) blocks;   // there and back
+                const float u = t < 0.5f ? t * 2.0f : 2.0f - t * 2.0f;
+                if (! c.dynamic) setParam (p, ids::band (b, "freq"), c.f0 * std::pow (c.f1 / c.f0, u));
+                // the dynamic case pulses the level so the band keeps moving
+                const float amp = c.dynamic ? (((blk / 100) % 2) ? 0.5f : 0.02f) : 0.25f;
+                for (int i = 0; i < 64; ++i)
+                {
+                    const float v = amp * (float) std::sin (phase);
+                    phase += juce::MathConstants<double>::twoPi * c.sineHz / fs;
+                    buf.setSample (0, i, v); buf.setSample (1, i, v);
+                }
+                p.processBlock (buf, midi);
+                for (int i = 0; i < 64; ++i)
+                {
+                    const double y = buf.getSample (0, i);
+                    finite &= std::isfinite (y);
+                    // second difference, relative to what a clean sine of this frequency can do
+                    if (blk > 20) worst = std::max (worst, std::abs (y - 2.0 * prev1 + prev2));
+                    prev2 = prev1; prev1 = y;
+                }
+            }
+            // a sine of amplitude A at f has |2nd difference| <= A (2 pi f / fs)^2 (x gain); allow 4x that plus margin
+            const double w = juce::MathConstants<double>::twoPi * c.sineHz / fs;
+            const double limit = 4.0 * 0.5 * juce::Decibels::decibelsToGain (std::max (0.0f, c.gain)) * w * w + 0.02;
+            check (finite && worst < limit, juce::String (c.what) + " @" + juce::String (fs, 0) + ": no clicks (2nd diff " + juce::String (worst, 4) + ", limit " + juce::String (limit, 4) + ")");
+        }
+    }
+    p.prepareToPlay (48000.0, 512);
+    clearBands (p);
+}
+
+/** Deep check: state round trip of the newer parameters (spectral, bypass, pan mode, multiview-related none). */
+static void testStateNewParams (StEqProcessor& p)
+{
+    std::cout << "State round trip (spectral, bypass, pan mode)\n";
+    clearBands (p);
+    const int b = p.addBand (Shape::bell, 2500.0f, 0.0f, 0.6f);
+    setParam (p, ids::band (b, "dyn_range"), -7.0f);
+    setParam (p, ids::band (b, "spectral"), 1.0f);
+    setParam (p, ids::band (b, "spec_density"), 72.0f);
+    setParam (p, ids::band (b, "spec_tilt"), 0.0f);
+    setParam (p, ids::bypass, 1.0f);
+    setParam (p, ids::panMode, 1.0f);
+    juce::MemoryBlock state;
+    p.getStateInformation (state);
+    StEqProcessor p2;
+    p2.setStateInformation (state.getData(), (int) state.getSize());
+    const auto bp = p2.getBand (b);
+    check (bp.spectral && std::abs (bp.specDensity - 72.0f) < 0.1f && ! bp.specTilt && std::abs (bp.dynRange + 7.0f) < 0.01f
+           && p2.refs.bypass.getBool() && p2.refs.panMode.getInt() == 1, "spectral / bypass / pan mode survive save + load");
+    p2.setPlayConfigDetails (2, 2, 48000.0, 512);
+    p2.prepareToPlay (48000.0, 512);
+    check (p2.getEngine().isSpectralActive() && p2.getLatencySamples() == 2048, "restored spectral band prepares the spectral stage and latency");
+    setParam (p, ids::bypass, 0.0f);
+    setParam (p, ids::panMode, 0.0f);
+    clearBands (p);
+}
+
 static void testStress (StEqProcessor& p)
 {
     std::cout << "Stress\n";
@@ -343,9 +482,11 @@ static void testStress (StEqProcessor& p)
                                             0.1f * std::pow (100.0f, rng.nextFloat()), (b * 3 + round) % 10, (Placement) ((b + round) % 5));
                 if (b % 3 == 0) setParam (p, ids::band (slot, "dyn_range"), rng.nextFloat() * 24.0f - 12.0f);
                 if (b % 5 == 0) setParam (p, ids::band (slot, "gq"), 1.0f);
+                if (b % 7 == 0 && round % 2 == 1) setParam (p, ids::band (slot, "spectral"), 1.0f);
             }
             setParam (p, ids::character, (float) (round % 3));
             setParam (p, ids::gainScale, round % 2 ? 150.0f : 60.0f);
+            p.applyModeChange();   // spectral bands come and go: (re)prepare the spectral stage
             p.refreshFirNow();
             const float peak = runNoise (p, 30, 512, finite, 0.2f);
             check (peak < 200.0f, "bounded mode " + juce::String (mode) + " round " + juce::String (round) + " peak " + juce::String (peak));
@@ -1021,6 +1162,108 @@ static void testCrossPlugin (StEqProcessor& p)
 }
 #endif
 
+/** Deep check: thousands of random mouse / wheel / key events on the real editor (display, band island, bottom bar,
+    multiview) while audio runs and the UI repaints. Must not crash, produce NaNs or leave invalid band state. */
+static void testUiMonkey (StEqProcessor& p)
+{
+    std::cout << "UI monkey (random interaction)\n";
+    clearBands (p);
+    p.addBand (Shape::bell, 1000.0f, 4.0f, 1.0f);
+    p.addBand (Shape::highCut, 15000.0f, 0.0f, 0.71f, 3);
+    std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
+    ed->setSize (StEqEditor::designWidth, StEqEditor::designHeight);
+    auto* e = dynamic_cast<StEqEditor*> (ed.get());
+    const auto seedEnv = juce::SystemStats::getEnvironmentVariable ("ST_MONKEY_SEED", "77");
+    juce::Random rng (seedEnv.getLargeIntValue());
+    juce::AudioBuffer<float> buf (2, 256);
+    juce::MidiBuffer midi;
+    bool finite = true, valid = true;
+    auto src = juce::Desktop::getInstance().getMainMouseSource();
+    juce::Image img (juce::Image::ARGB, ed->getWidth(), ed->getHeight(), true);
+    juce::Component::SafePointer<juce::Component> downTarget;
+    juce::Point<float> downPos;
+
+    auto send = [&] (int type, juce::Point<float> pos, juce::ModifierKeys mods)
+    {
+        auto* root = ed.get();
+        auto* target = type == 1 || type == 2 ? downTarget.getComponent() : root->getComponentAt (pos.toInt());
+        if (target == nullptr) return;
+        const auto local = target->getLocalPoint (root, pos);
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent ev (src, local, mods, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, target, target, now, target->getLocalPoint (root, downPos), now, 1, type == 1);
+        switch (type)
+        {
+            case 0: downTarget = target; downPos = pos; target->mouseDown (ev); break;
+            case 1: target->mouseDrag (ev); break;
+            case 2: target->mouseUp (ev); downTarget = nullptr; break;
+            case 3: target->mouseMove (ev); break;
+            case 4: target->mouseDoubleClick (ev); break;
+            case 5: { juce::MouseWheelDetails w { 0.0f, rng.nextFloat() - 0.5f, false, false, false }; target->mouseWheelMove (ev, w); break; }
+            default: break;
+        }
+    };
+
+    for (int step = 0; step < 4000; ++step)
+    {
+        if (step == 2000) e->openInstances();   // second half: the multiview over the whole window
+        if (step == 3000 && e->getMultiView() != nullptr) e->openInstances();
+        const juce::Point<float> pos (rng.nextFloat() * (float) ed->getWidth(), rng.nextFloat() * (float) ed->getHeight());
+        int m = 0;
+        if (rng.nextInt (6) == 0) m |= juce::ModifierKeys::shiftModifier;
+        if (rng.nextInt (8) == 0) m |= juce::ModifierKeys::altModifier;
+        if (rng.nextInt (8) == 0) m |= juce::ModifierKeys::commandModifier;
+        const juce::ModifierKeys lb (m | juce::ModifierKeys::leftButtonModifier);
+        switch (rng.nextInt (7))
+        {
+            case 0: case 1:   // drag gesture
+            {
+                send (0, pos, lb);
+                auto q = pos;
+                for (int i = 0; i < 6; ++i) { q += juce::Point<float> (rng.nextFloat() * 40.0f - 20.0f, rng.nextFloat() * 40.0f - 20.0f); send (1, q, lb); }
+                send (2, q, juce::ModifierKeys (m));
+                break;
+            }
+            case 2: send (3, pos, juce::ModifierKeys (m)); break;
+            case 3: send (0, pos, lb); send (2, pos, juce::ModifierKeys (m)); break;
+            case 4: if (rng.nextInt (4) == 0) { send (0, pos, lb); send (2, pos, {}); send (4, pos, {}); } break;
+            case 5: send (5, pos, juce::ModifierKeys (m)); break;
+            case 6:
+            {
+                static const juce::KeyPress keys[] = { juce::KeyPress (juce::KeyPress::deleteKey), juce::KeyPress (juce::KeyPress::escapeKey),
+                                                       juce::KeyPress ('a', juce::ModifierKeys::commandModifier, 0), juce::KeyPress ('c', juce::ModifierKeys::commandModifier, 0),
+                                                       juce::KeyPress ('v', juce::ModifierKeys::commandModifier, 0), juce::KeyPress (juce::KeyPress::tabKey) };
+                if (auto* d = &e->getDisplay(); d != nullptr) d->keyPressed (keys[(size_t) rng.nextInt (6)]);
+                break;
+            }
+            default: break;
+        }
+
+        if (step % 10 == 0)
+        {
+            for (int c = 0; c < 2; ++c) for (int i = 0; i < 256; ++i) buf.setSample (c, i, 0.2f * (rng.nextFloat() * 2.0f - 1.0f));
+            p.processBlock (buf, midi);
+            for (int c = 0; c < 2; ++c) for (int i = 0; i < 256; ++i) finite &= std::isfinite (buf.getSample (c, i)) && std::abs (buf.getSample (c, i)) < 100.0f;
+            e->getDisplay().syncFromParameters();
+        }
+        if (step % 50 == 0)
+        {
+            p.applyModeChange();
+            juce::Graphics g (img);
+            ed->paintEntireComponent (g, true);
+        }
+        for (int b = 0; b < kMaxBands; ++b)
+        {
+            const auto bp = p.getBand (b);
+            valid &= ! bp.used || (bp.freq >= 10.0f && bp.freq <= 30000.0f && std::abs (bp.gain) <= 30.0f && bp.q >= 0.025f && bp.q <= 40.0f);
+        }
+    }
+    check (finite, "UI monkey: audio stays finite and bounded");
+    check (valid, "UI monkey: band parameters stay in range");
+    check (p.getNumUsedBands() <= kMaxBands, "UI monkey: band count valid (" + juce::String (p.getNumUsedBands()) + ")");
+    ed.reset();
+    clearBands (p);
+}
+
 static int runTests()
 {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -1032,11 +1275,15 @@ static int runTests()
     testResponses (p);
     testDynamics (p);
     testSpectral (p);
+    testResponseSweep (p);
+    testAutomationClicks (p);
+    testStateNewParams (p);
     testStress (p);
     testState (p);
     testCpu (p);
     testInteraction (p);
     testInstancesAndOutput (p);
+    testUiMonkey (p);
    #if JUCE_MAC
     testCrossPlugin (p);
    #endif

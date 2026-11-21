@@ -1027,14 +1027,15 @@ void EqDisplay::paintPreview (juce::Graphics& g)
     const float r = displayRange;
     for (int i = 0; i < kPoints; i += 2)
     {
-        const float y = yForDb (juce::jlimit (-r * 1.6f, r * 1.6f, (float) a.magnitudeDb (freqs[(size_t) i])));
+        // far enough to leave the plot (clipped), like the band curves: cuts must keep falling, not flatten
+        const float y = yForDb (juce::jlimit (-r * 6.0f, r * 2.0f, (float) a.magnitudeDb (freqs[(size_t) i])));
         if (i == 0) path.startNewSubPath (xs[0], y); else path.lineTo (xs[(size_t) i], y);
     }
     juce::Path dashed;
     const float dashes[] = { 3.0f, 4.0f };
     juce::PathStrokeType (1.0f).createDashedStroke (dashed, path, dashes, 2);
     g.saveState();
-    g.reduceClipRegion (plot.toNearestInt());
+    g.reduceClipRegion (plot.withBottom (plot.getBottom() - 18.0f).toNearestInt());
     g.setColour (t.curve.withAlpha (0.28f * previewAlpha.current));
     g.fillPath (dashed);
     g.restoreState();

@@ -345,12 +345,12 @@ void Engine::process (float* const* io, int numChannels, const float* const* sc,
             if (! linear)
             {
                 if (! b.wasActive) { b.filter.reset(); updateBandDesign (b, false); }
-                else if (b.designDirty || (b.dynamic && std::abs (b.dynDb - b.designedDyn) > 0.01f)) updateBandDesign (b, true);
+                else if (b.designDirty || (b.dynamic && std::abs (b.dynDb - b.designedDyn) > 0.05f)) updateBandDesign (b, true);   // 0.05 dB steps, glided
                 applyBand (b, b.filter, sub, k);
             }
             else if (b.dynamic && ! b.spectral)
             {
-                if (std::abs (b.dynDb - b.deltaDyn) > 0.01f || b.designDirty)
+                if (std::abs (b.dynDb - b.deltaDyn) > 0.05f || b.designDirty)
                 {
                     BandParams d = b.params;
                     d.gain = 0.0f;
