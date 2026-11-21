@@ -1576,6 +1576,8 @@ struct SnapshotApp : juce::JUCEApplicationBase
             }
         } });
         snap->jobs.push_back ({ [] {}, "13_output", 1.0f, [] (StEqEditor& e) { e.openOutput(); } });
+        snap->jobs.push_back ({ [&p, selectBands] { p.presets.loadPreset (0); const int b = p.addBand (Shape::highCut, 21500.0f, 0.0f, 1.0f, 3); selectBands (juce::String (b), b); },
+                                "15_high_cut_near_nyquist" });
         snap->jobs.push_back ({ [load, selectBands] { load ("Vocal Presence"); selectBands ("", -1); }, "14_param_display", 1.0f, [] (StEqEditor& e)
         {
             auto& d = e.getDisplay();
