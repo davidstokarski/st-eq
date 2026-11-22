@@ -481,21 +481,32 @@ void EqDisplay::computeBandCurve (int b, Curve& c)
     {
         if (procMode == (int) ProcMode::zeroLatency)
         {
-            // digital response up to Nyquist, then the analog shape (joined continuously) so curves don't flatten
+            // The digital response (what you hear). Cuts fall away at Nyquist, where the digital filter ends.
+            // Other shapes blend over the top of the band into the analog shape (shifted to meet it), so the curve
+            // carries on past Nyquist without a kink (a digital curve always flattens out at Nyquist).
             const auto a = st::dsp::eq::designAnalog (spec);
             const auto d = st::dsp::eq::designDigital (a, sampleRate);
-            float offset = 0.0f;
+            const bool cut = spec.shape == Shape::lowCut || spec.shape == Shape::highCut;
+            const double fA = 0.42 * sampleRate, fB = 0.4995 * sampleRate;
+            auto digitalDb = [&] (double f) { return 20.0 * std::log10 (std::max (1.0e-9, std::abs (d.response (f, sampleRate)))); };
+            const double offset = digitalDb (fA) - a.magnitudeDb (fA);
             for (int i = 0; i < kPoints; ++i)
             {
-                const float f = freqs[(size_t) i];
-                if (f < 0.4995 * sampleRate)
-                {
-                    const float dd = (float) (20.0 * std::log10 (std::max (1.0e-9, std::abs (d.response (f, sampleRate)))));
-                    offset = dd - (float) a.magnitudeDb (f);
-                    out[(size_t) i] = dd;
-                }
+                const double f = freqs[(size_t) i];
+                double y;
+                if (cut)            y = f < fB ? digitalDb (f) : -200.0;
+                else if (f <= fA)   y = digitalDb (f);
                 else
-                    out[(size_t) i] = (float) a.magnitudeDb (f) + offset;
+                {
+                    const double ana = a.magnitudeDb (f) + offset;
+                    if (f >= fB) y = ana;
+                    else
+                    {
+                        const double t = (f - fA) / (fB - fA), u = t * t * (3.0 - 2.0 * t);
+                        y = (1.0 - u) * digitalDb (f) + u * ana;
+                    }
+                }
+                out[(size_t) i] = (float) y;
             }
         }
         else

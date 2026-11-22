@@ -162,7 +162,7 @@ void FirWorker::computeNatural (float scale)
         if (cacheValid[(size_t) b] && juce::exactlyEqual (cachedScale, scale) && sameFilter (p, cachedFor[(size_t) b])) continue;
 
         const auto a = st::dsp::eq::designAnalog (makeSpec (p, scale));
-        const auto d = st::dsp::eq::designDigital (a, fs);
+        const auto d = st::dsp::eq::designDigital (a, fs, st::dsp::eq::CutStyle::matched);   // the IIR natural phase corrects
         auto& r = ratios[(size_t) b];
         for (int k = 0; k < numBins; ++k)
         {

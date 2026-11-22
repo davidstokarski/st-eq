@@ -357,9 +357,16 @@ static void testResponseSweep (StEqProcessor& p)
                     const double hz = 40.0 * std::pow (0.45 * fs / 40.0, k / 47.0);
                     const double ana = analogDb (p, hz);
                     if (ana < -12.0) continue;
-                    const double err = std::abs (magAt (h[0], hz, fs) - ana);
+                    // zero latency cuts are bilinear (neat at any cutoff): they match up to the corner and fall away
+                    // faster than the analog past it (towards Nyquist), never above it
+                    const bool zlCut = m.mode == ProcMode::zeroLatency && (shape == Shape::highCut || shape == Shape::lowCut);
+                    const bool pastCorner = shape == Shape::highCut ? hz > f : hz < f;
+                    const double dig = magAt (h[0], hz, fs);
+                    const double err = zlCut && pastCorner ? juce::jmax (0.0, dig - ana) : std::abs (dig - ana);
                     // linear phase below 150 Hz: FIR length limits sharp low resonances at Medium resolution
-                    const double tol = hz > 0.2 * fs ? m.tolHigh : (m.mode == ProcMode::linearPhase && hz < 150.0 ? 1.2 : m.tolLow);
+                    // (bilinear cuts with a corner high up bend the knee a little: 2 dB there)
+                    const double tol = zlCut && f > 0.15 * fs ? 2.0
+                                     : hz > 0.2 * fs ? m.tolHigh : (m.mode == ProcMode::linearPhase && hz < 150.0 ? 1.2 : m.tolLow);
                     if (err / tol > worst)
                     {
                         worst = err / tol;

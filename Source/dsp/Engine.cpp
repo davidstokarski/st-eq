@@ -236,7 +236,9 @@ void Engine::runDetector (int index, const float* const* src, int numSrc, int n)
 void Engine::updateBandDesign (Band& b, bool glide) noexcept
 {
     const float dyn = b.dynamic && ! b.spectral ? b.dynDb : 0.0f;
-    b.filter.setDesign (eq::designDigital (makeSpec (b.params, global.gainScale, dyn), sampleRate), glide);
+    // natural phase: analog-matched cuts (their error stays bounded, so the correction FIR can make them analog)
+    const auto style = config.mode == ProcMode::naturalPhase ? eq::CutStyle::matched : eq::CutStyle::bilinear;
+    b.filter.setDesign (eq::designDigital (makeSpec (b.params, global.gainScale, dyn), sampleRate, style), glide);
     b.designedDyn = dyn;
     b.designDirty = false;
 }
