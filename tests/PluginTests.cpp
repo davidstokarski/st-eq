@@ -1004,6 +1004,29 @@ static void testInstancesAndOutput (StEqProcessor& p)
         check (e->getInstanceHub().getOthers().empty() && mv->getNumRows() == 1, "removed instance's row dropped synchronously");
         { juce::Graphics g (wimg); mv->paintEntireComponent (g, true); }
     }
+    {
+        // the header's multiview button (left of the gear, like the other ST plug-ins) opens and closes it
+        std::function<juce::Button* (juce::Component&)> findButton = [&findButton] (juce::Component& c) -> juce::Button*
+        {
+            for (auto* child : c.getChildren())
+            {
+                if (auto* b = dynamic_cast<juce::Button*> (child); b != nullptr && b->getTooltip().startsWith ("Multiview")) return b;
+                if (auto* found = findButton (*child)) return found;
+            }
+            return nullptr;
+        };
+        auto* mvButton = findButton (*ed);
+        check (mvButton != nullptr && mvButton->isVisible(), "header has the multiview button");
+        if (mvButton != nullptr && mvButton->onClick)
+        {
+            if (e->getMultiView() != nullptr) e->openInstances();   // (toggle) make sure it starts closed
+            if (e->getMultiView() != nullptr) mvButton->onClick();
+            mvButton->onClick();
+            check (e->getMultiView() != nullptr, "header multiview button opens the multiview");
+            mvButton->onClick();
+            check (e->getMultiView() == nullptr, "pressing it again closes it");
+        }
+    }
     e->openOutput();
     {
         const bool was = e->areTooltipsEnabled();

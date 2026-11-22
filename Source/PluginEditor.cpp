@@ -6,6 +6,7 @@ StEqEditor::StEqEditor (StEqProcessor& p)
     : EditorBase (p, designWidth, designHeight), proc (p), display (p), footer (p), hub (p)
 {
     header.setProductName ("EQ");
+    header.setMultiViewCallback ([this] { toggleInstances(); });   // multiview button (left of the gear), like the other ST plug-ins
 
     auto& content = getContent();
     content.addAndMakeVisible (display);
