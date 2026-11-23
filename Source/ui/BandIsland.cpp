@@ -664,9 +664,12 @@ void BandPanel::buildOutline()
     juce::Path p;
     p.startNewSubPath (Q (0.0f, r));
     p.quadraticTo (Q (0.0f, 0.0f), Q (r, 0.0f));
+    // the fall mirrors the rise exactly (same span and handles), then runs level into the right corner
+    const float rise = p0 - r;
     p.cubicTo (Q (88.0f, 0.0f), Q (138.0f, peak), Q (p0, peak));
     p.lineTo (Q (p1, peak));
-    p.cubicTo (Q (p1 + 32.0f, peak), Q (350.0f + dynShift(), 0.0f), Q (W - r, 0.0f));
+    p.cubicTo (Q (p1 + (p0 - 138.0f), peak), Q (p1 + rise - (88.0f - r), 0.0f), Q (p1 + rise, 0.0f));
+    p.lineTo (Q (W - r, 0.0f));
     p.quadraticTo (Q (W, 0.0f), Q (W, r));
     p.lineTo (Q (W, H - r));
     p.quadraticTo (Q (W, H), Q (W - r, H));
@@ -677,21 +680,26 @@ void BandPanel::buildOutline()
 
     // the dynamics tab: a lifted area on the plateau, from a soft left flank to a smooth bowed edge on its right
     // (from the top edge down into the gain well, never poking out of the outline)
+    const float cx = chevronX();
     juce::Path tab;
     tab.startNewSubPath (Q (100.0f, -40.0f));
-    tab.lineTo (Q (chevronX() - 8.0f, -40.0f));
-    appendTabEdge (tab);
+    tab.lineTo (Q (cx - 14.0f, -40.0f));
+    tab.lineTo (Q (cx - 14.0f, peak));   // same curve as tabEdge()
+    tab.cubicTo (Q (cx, peak), Q (cx + 6.0f, -12.0f), Q (cx - 13.0f, 9.0f));
+    tab.lineTo (Q (cx - 20.0f, 17.0f));
     tab.lineTo (Q (100.0f, 17.0f));
     tab.closeSubPath();
     dynTab = tab;
 }
 
-void BandPanel::appendTabEdge (juce::Path& p) const
+juce::Path BandPanel::tabEdge() const
 {
-    const float cx = chevronX();
-    p.lineTo (toLocal (cx - 8.0f, -32.0f));
-    p.cubicTo (toLocal (cx + 4.0f, -22.0f), toLocal (cx + 5.0f, -6.0f), toLocal (cx - 13.0f, 9.0f));
-    p.lineTo (toLocal (cx - 20.0f, 17.0f));
+    // leaves the top edge tangentially just right of the plateau, bows out and curves down into the gain well
+    const float cx = chevronX(), peak = -26.5f;
+    juce::Path p;
+    p.startNewSubPath (toLocal (cx - 14.0f, peak));
+    p.cubicTo (toLocal (cx, peak), toLocal (cx + 6.0f, -12.0f), toLocal (cx - 13.0f, 9.0f));
+    return p;
 }
 
 void BandPanel::resized()
@@ -808,16 +816,16 @@ void BandPanel::paintBackground (juce::Graphics& g)
 
         // its right edge, a faint light line; expanded, the section seam grows out of it down to the bottom
         const float cx = chevronX(), x = expAmt.current;
-        juce::Path edge;
-        edge.startNewSubPath (toLocal (cx - 8.0f, -32.0f));
-        edge.cubicTo (toLocal (cx + 4.0f, -22.0f), toLocal (cx + 5.0f, -6.0f), toLocal (cx - 13.0f, 9.0f));
-        g.setColour (juce::Colours::white.withAlpha (0.09f * a * (1.0f - 0.5f * x)));
-        g.strokePath (edge, juce::PathStrokeType (1.0f));
+        // the line fades in below the top edge, so nothing meets the outline at an angle
+        const float edgeAlpha = 0.09f * a * (1.0f - 0.5f * x);
+        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.0f), 0.0f, toLocal (0.0f, -24.0f).y,
+                                                 juce::Colours::white.withAlpha (edgeAlpha), 0.0f, toLocal (0.0f, -13.0f).y, false));
+        g.strokePath (tabEdge(), juce::PathStrokeType (1.0f));
         if (x > 0.02f)
         {
             juce::Path seam;
-            seam.startNewSubPath (toLocal (cx + 0.75f, -14.0f));   // the edge's outermost point
-            seam.cubicTo (toLocal (cx + 7.0f, 16.0f), toLocal (cx + 7.0f, 66.0f), toLocal (cx + 2.0f, bodyHeight + 6.0f));
+            seam.startNewSubPath (toLocal (cx - 1.0f, -15.0f));   // the edge's outermost point
+            seam.cubicTo (toLocal (cx + 5.0f, 16.0f), toLocal (cx + 5.0f, 66.0f), toLocal (cx, bodyHeight + 6.0f));
             g.setColour (juce::Colours::white.withAlpha (0.07f * a * x));
             g.strokePath (seam, juce::PathStrokeType (1.0f));
         }

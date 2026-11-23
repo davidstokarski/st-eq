@@ -166,8 +166,8 @@ private:
     void timerCallback() override;
     void updateState();
     void buildOutline();
-    /** Appends the dynamics tab's right edge (from just below the top edge, bowing out and into the gain well). */
-    void appendTabEdge (juce::Path&) const;
+    /** The dynamics tab's right edge (local coordinates). */
+    juce::Path tabEdge() const;
     void paintBackground (juce::Graphics&);
     void paintLabel (juce::Graphics&, st::Knob&, const juce::String& label, juce::Point<float> centre);
 };
