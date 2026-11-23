@@ -7,6 +7,18 @@ StEqEditor::StEqEditor (StEqProcessor& p)
 {
     header.setProductName ("EQ");
     header.setMultiViewCallback ([this] { toggleInstances(); });   // multiview button (left of the gear), like the other ST plug-ins
+    header.extendSettingsMenu = [this] (juce::PopupMenu& m)
+    {
+        // 3D mode (per instance, saved with it): bands get a depth; the display gets 3D / Top / Front views
+        const bool on = proc.refs.is3D();
+        m.addItem ("3D Mode", true, on, [safe = juce::Component::SafePointer<StEqEditor> (this), on]
+        {
+            if (safe == nullptr) return;
+            safe->proc.undoManager.beginNewTransaction ("3D mode");
+            safe->proc.setValue (steq::ids::mode3d, on ? 0.0f : 1.0f);
+            if (! on) safe->display.setView (steq::EqDisplay::View::threeD);
+        });
+    };
 
     auto& content = getContent();
     content.addAndMakeVisible (display);

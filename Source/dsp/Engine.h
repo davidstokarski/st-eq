@@ -34,6 +34,10 @@ struct PhaseConfig
                      (magnitude and phase, written by FirWorker) -> character -> output
       Linear Phase : one linear-phase FIR of all static band gains (FirWorker) -> dynamic bands as small
                      IIR gain deltas -> character -> output
+    3D mode (bands with depth, stereo only): the band's change to the signal (output - input of its filter) is
+    moved back: a boost's added part loses some directness and gains width (a decorrelated copy in the side)
+    and a few early reflections (a small room); a cut's mid part fades with depth, so at 100 % only the sides
+    are cut. Zero latency in every mode: in Linear Phase, depth bands run as IIR bands (left out of the FIR).
     Bands with spectral dynamics contribute their static gain above, and their dynamic part in a
     SpectralDynamics STFT stage that follows (only prepared while such a band exists; adds its FFT size of
     latency).
@@ -92,9 +96,22 @@ private:
 
         // dynamics
         std::array<st::dsp::Biquad, 2> detector;   // [0] band / high pass, [1] low pass (free trigger)
-        bool detectorDirty = true, det0 = false, det1 = false, wasActive = false, wasDynamic = false;
+        bool detectorDirty = true, det0 = false, det1 = false, wasActive = false, wasDynamic = false, wasIir = false;
         float env = 0.0f, avgDb = -40.0f, dynDb = 0.0f, attCoeff = 0.1f, relCoeff = 0.01f;
+
+        // depth (3D mode)
+        float depthNow = 0.0f;                       // smoothed 0..1
+        std::vector<float> roomBuf;                  // early reflections: delay line of the (damped) mid change
+        std::array<std::vector<float>, 3> apBuf;     // decorrelator: three short allpasses
+        std::array<int, 3> apPos {};
+        int roomPos = 0;
+        float roomLp = 0.0f;
     };
+
+    struct Tap { int delay; float gl, gr; };
+    std::array<Tap, 6> roomTaps {};
+    int roomMask = 0;
+    float roomLpCoeff = 0.5f, depthStep = 0.001f;
 
     std::array<Band, kMaxBands> bands;
     GlobalSettings global;
@@ -121,6 +138,8 @@ private:
     void updateDetector (Band&) noexcept;
     void runDetector (int b, const float* const* src, int numSrc, int n) noexcept;
     void applyBand (Band&, st::dsp::EqCascade&, float* const* io, int n) noexcept;
+    /** Runs the band, with its depth when it has one (or is fading it out). */
+    void applyBandWithDepth (Band&, int index, float* const* io, int n) noexcept;
     void processSolo (float* const* io, int n) noexcept;
     void applyCharacter (float* const* io, int n) noexcept;
 };

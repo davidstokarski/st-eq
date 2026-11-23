@@ -442,6 +442,7 @@ BandPanel::BandPanel (StEqProcessor& p, int b, int selected, bool expand) : proc
     knob (attack, "dyn_attack", "Attack");
     knob (release, "dyn_release", "Release");
     knob (density, "spec_density", "Spectral density: low = neighbouring frequencies react together, high = each frequency on its own");
+    knob (depth, "depth", "Depth (3D mode): moves the band back. Boosts get wider with small room reflections; cuts leave the centre and move to the sides");
     gain->setRecessed (true);
     gain->setBipolar (true);
     q->setBipolar (true);   // Q = 1 at twelve o'clock, arc grows either way
@@ -494,6 +495,8 @@ BandPanel::BandPanel (StEqProcessor& p, int b, int selected, bool expand) : proc
     dynAmt.snap (isDynamic() ? 1.0f : 0.0f);
     expAmt.snap (expanded ? 1.0f : 0.0f);
     specAmt.snap (proc.getBand (band).spectral ? 1.0f : 0.0f);
+    last3d = proc.refs.is3D();
+    depthAmt.snap (last3d ? 1.0f : 0.0f);
     setSize (getPreferredWidth(), height);
     updateState();
     startTimerHz (60);
@@ -527,7 +530,8 @@ void BandPanel::animateStep (double dt)
     const bool a = dynAmt.tick (dt, 14.0f);
     const bool b = expAmt.tick (dt, 14.0f);
     const bool c = specAmt.tick (dt, 14.0f);
-    const bool moving = a || b || c;
+    const bool d = depthAmt.tick (dt, 14.0f);
+    const bool moving = a || b || c || d;
     backgroundCache = {};
     if (getWidth() != getPreferredWidth()) setSize (getPreferredWidth(), height);
     else resized();
@@ -545,6 +549,13 @@ void BandPanel::timerCallback()
     if (animating) animateStep (1.0 / 60.0);
     const auto p = proc.getBand (band);
     const bool dyn = isDynamic();
+    if (proc.refs.is3D() != last3d)
+    {
+        last3d = ! last3d;
+        depthAmt.setTarget (last3d ? 1.0f : 0.0f);
+        animating = true;
+        if (onSizeChanged) onSizeChanged();
+    }
     if (p.shape != lastShape || dyn != lastDynamic || p.bypass != lastBypass || p.dynBypass != lastDynBypass || p.gainQ != lastGq
         || p.sidechain != lastSc || p.spectral != lastSpectral || p.specTilt != lastTilt)
     {
@@ -554,7 +565,7 @@ void BandPanel::timerCallback()
 
     // knob captions swap to values while hovered / dragged (they're drawn by the island)
     int mask = 0, bit = 1;
-    for (auto* k : { freq.get(), gain.get(), q.get(), attack.get(), release.get(), density.get() })
+    for (auto* k : { freq.get(), gain.get(), q.get(), attack.get(), release.get(), density.get(), depth.get() })
     {
         if (k->isMouseOverOrDragging()) mask |= bit;
         bit <<= 1;
@@ -611,7 +622,7 @@ void BandPanel::buildOutline()
     // peak over the gain knob; dynamic bands a gentle arch into a tab with a chevron tip; expanded, the tab runs
     // over the dynamics section. All three share one point structure so the outline can morph between them.
     struct Top { juce::Point<float> c1a, c1b, p1, c2a, c2b, p2, p3, p4, p5, c5a, c5b; };
-    const float W = (float) collapsedWidth + (float) expandedExtra * expAmt.current;
+    const float W = (float) collapsedWidth + shift();
     const Top plain     { { 100, -2 }, { 150, -20 }, { 190, -25 }, { 205, -27 }, { 215, -26 }, { 233.5f, -26 }, { 277, -25 }, { 290, -22 },
                           { 300, -19 }, { 345, -10 }, { 400, -2 } };
     const Top dynamic   { { 45, -2 },  { 125, -7 },  { 176, -16.5f }, { 182, -19 }, { 186, tabTop }, { 196, tabTop }, { 276, tabTop },
@@ -671,7 +682,8 @@ void BandPanel::resized()
     };
     knobBox (*freq, 140.0f, 45.4f, 28.3f, false);
     knobBox (*gain, gainCentreX, 39.4f, 32.7f, true);
-    knobBox (*q, 328.7f + sh, 43.9f, 28.3f, false);
+    knobBox (*q, 328.7f + dynShift(), 43.9f, 28.3f, false);
+    knobBox (*depth, depthX(), 43.9f, 24.0f, false);
     // attack / release (+ density for spectral bands: the three close up)
     const float sp = specAmt.current;
     knobBox (*attack, attackX(), 59.0f, 15.0f - 2.0f * sp, false);
@@ -694,7 +706,7 @@ void BandPanel::resized()
     triggerButton->setBounds (box (321.0f, 8.0f, 70.0f, 20.0f));
 
     // right column
-    centred (gainQButton, 293.0f + sh, 20.0f, 24.0f, 22.0f);
+    centred (gainQButton, 293.0f + dynShift(), 20.0f, 24.0f, 22.0f);
     centred (prevButton, 390.0f + sh, 12.0f, 15.0f, 18.0f);
     centred (nextButton, 420.0f + sh, 12.0f, 15.0f, 18.0f);
     closeButton.setBounds (box (443.0f + sh, 3.0f, 21.0f, 21.0f));
@@ -717,6 +729,7 @@ void BandPanel::resized()
         fade (*c, x * x);
     for (auto* c : std::initializer_list<juce::Component*> { density.get(), &tiltButton })
         fade (*c, x * x * sp);
+    fade (*depth, depthAmt.current * depthAmt.current);
 }
 
 void BandPanel::paintBackground (juce::Graphics& g)
@@ -743,7 +756,7 @@ void BandPanel::paintBackground (juce::Graphics& g)
     {
         g.saveState();
         g.reduceClipRegion (juce::Rectangle<int> (0, 0, getWidth(), (int) toLocal (0.0f, 9.0f).y));
-        const float x0 = toLocal (0.0f, 0.0f).x, x1 = toLocal ((float) (collapsedWidth + (expanded ? expandedExtra : 0)), 0.0f).x;
+        const float x0 = toLocal (0.0f, 0.0f).x, x1 = toLocal ((float) collapsedWidth + shift(), 0.0f).x;
         const auto edgeCol = col.interpolatedWith (juce::Colours::white, 0.35f);
         juce::ColourGradient edge (edgeCol.withAlpha (0.0f), x0, 0.0f, edgeCol.withAlpha (0.0f), x1, 0.0f, false);
         edge.addColour (0.3, edgeCol.withAlpha (0.30f));
@@ -804,7 +817,14 @@ void BandPanel::paintOverChildren (juce::Graphics& g)
 
     paintLabel (g, *freq, "FREQ", toLocal (140.0f, 84.0f));
     paintLabel (g, *gain, "GAIN", toLocal (gainCentreX, 91.5f));
-    paintLabel (g, *q, "Q", toLocal (328.7f + sh, 84.0f));
+    paintLabel (g, *q, "Q", toLocal (328.7f + dynShift(), 84.0f));
+    if (depthAmt.current > 0.02f)
+    {
+        g.saveState();
+        g.setOpacity (depthAmt.current);
+        paintLabel (g, *depth, "DEPTH", toLocal (depthX(), 84.0f));
+        g.restoreState();
+    }
 
     // centre references: "0 dB" over Gain on the plateau (when there is no dynamics tab), "1" over Q
     g.setFont (st::fonts::medium (fs (10.5f)));
@@ -817,7 +837,7 @@ void BandPanel::paintOverChildren (juce::Graphics& g)
     }
     g.setColour (t.textDim);
     if (st::dsp::eq::hasQ (p.shape))
-        g.drawText ("1", juce::Rectangle<float> (20.0f, 12.0f).withCentre (toLocal (328.7f + sh, 6.0f)), juce::Justification::centred, false);
+        g.drawText ("1", juce::Rectangle<float> (20.0f, 12.0f).withCentre (toLocal (328.7f + dynShift(), 6.0f)), juce::Justification::centred, false);
 
     // range grip marks on the gain well (top left), hinting that the ring can be dragged
     if (st::dsp::eq::hasGain (p.shape))

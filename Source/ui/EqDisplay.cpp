@@ -277,6 +277,7 @@ bool EqDisplay::advanceRange (double seconds)
 
 void EqDisplay::setSketchMode (bool on)
 {
+    if (on && ! flatView()) setView (View::front);   // sketching draws the gain curve
     sketchMode = on;
     sketchButton.setToggleState (on, juce::dontSendNotification);
     sketchButton.setOnColour (st::Theme::get().curve);
@@ -356,13 +357,19 @@ void EqDisplay::applyVertical (int band, const BandParams& s, float dDb)
 juce::Point<float> EqDisplay::dotPosition (int b) const
 {
     const auto& p = bands[(size_t) b];
+    switch (getView())
+    {
+        case View::threeD: return project (p.freq, juce::jlimit (-displayRange, displayRange * 1.2f, dotDb (p)), p.depth * 0.01f);
+        case View::top:    return { xForHz (p.freq), topY (p.depth * 0.01f) };
+        case View::front:  break;
+    }
     return { xForHz (p.freq), yForDb (dotDb (p)) };
 }
 
 float EqDisplay::getBandX (int b) const
 {
     if (! juce::isPositiveAndBelow (b, kMaxBands)) return plot.getCentreX();
-    return xForHz (bands[(size_t) b].freq);
+    return dotPosition (b).x;
 }
 
 float EqDisplay::curveYAt (float x) const
@@ -399,6 +406,7 @@ juce::Rectangle<float> EqDisplay::dynHandleBounds (int b) const
 
 int EqDisplay::dynHandleAt (juce::Point<float> pt) const
 {
+    if (! flatView()) return -1;
     for (int b = kMaxBands - 1; b >= 0; --b)
         if (bands[(size_t) b].isDynamic() && dynHandleBounds (b).expanded (4.0f).contains (pt))
             return b;
@@ -600,6 +608,12 @@ void EqDisplay::frame (double dt)
 {
     bool changed = readParameters();
     bool layersChanged = changed;
+    if (proc.refs.is3D() != mode3d)
+    {
+        mode3d = ! mode3d;
+        if (! mode3d) hoverDepthBand = -1;
+        gridDirty = layersChanged = changed = true;
+    }
 
     // solo changes dim the other bands
     if (const int solo = proc.soloBand.load(); solo != lastSoloBand) { lastSoloBand = solo; layersChanged = true; }
@@ -722,6 +736,26 @@ void EqDisplay::paint (juce::Graphics& g)
 {
     const float ps = juce::jmax (1.0f, g.getInternalContext().getPhysicalPixelScaleFactor());
     if (curvesDirty) { rebuildCurves(); curveLayer = {}; }
+
+    if (const auto view = getView(); view != View::front)
+    {
+        // 3D mode views: drawn directly (no layers), then the same dots / parameter display / meter
+        if (view == View::threeD) paint3D (g); else paintTop (g);
+        paintDots (g);
+        paintReadout (g);
+        if (! compact) paintMeter (g);
+        if (drag == Drag::rubber && ! rubber.isEmpty())
+        {
+            const auto& t = st::Theme::get();
+            g.setColour (t.curve.withAlpha (0.06f));
+            g.fillRoundedRectangle (rubber, 3.0f);
+            g.setColour (t.curve.withAlpha (0.35f));
+            g.drawRoundedRectangle (rubber, 3.0f, 1.0f);
+        }
+        paintViewButtons (g);
+        return;
+    }
+
     rebuildLayers (ps);
     const auto all = getLocalBounds().toFloat();
 
@@ -762,6 +796,7 @@ void EqDisplay::paint (juce::Graphics& g)
 
     bool any = false;
     for (auto& b : bands) any |= b.used;
+    paintViewButtons (g);
     if (! any && ! sketchMode && ! compact)
     {
         g.setFont (st::fonts::medium (13.0f));
@@ -1349,6 +1384,7 @@ void EqDisplay::paintPiano (juce::Graphics& g)
 
 int EqDisplay::triggerHandleAt (juce::Point<float> pt) const
 {
+    if (! flatView()) return 0;
     if (triggerBand < 0 || triggerBarY < 0.0f || ! bands[(size_t) triggerBand].used || bands[(size_t) triggerBand].trigger != Trigger::free) return 0;
     const auto& p = bands[(size_t) triggerBand];
     if (std::abs (pt.y - triggerBarY) > 9.0f) return 0;
@@ -1499,6 +1535,7 @@ void EqDisplay::beginBandDrag (const juce::MouseEvent& e)
         beginGesture (b, "freq");
         beginGesture (b, "gain");
         beginGesture (b, "q");
+        if (getView() == View::top) beginGesture (b, "depth");
     }
 }
 
@@ -1515,11 +1552,29 @@ void EqDisplay::applyBandDrag (const juce::MouseEvent& e)
     }
     else axisLocked = false;
 
-    const float octPerPx = std::log2 (maxHz / minHz) / juce::jmax (1.0f, plot.getWidth());
+    // 3D view: the plane at the (first) dragged band's depth sets the scale
+    const auto view = getView();
+    auto span = juce::Rectangle<float> (plot.getX(), eqArea.getY(), plot.getWidth(), eqArea.getHeight());
+    if (view == View::threeD && ! dragStarts.empty()) span = planeAt (dragStarts.front().params.depth * 0.01f);
+    const float octPerPx = std::log2 (maxHz / minHz) / juce::jmax (1.0f, span.getWidth());
     const float ratio = std::exp2 (dx * octPerPx);
+
+    if (view == View::top)
+    {
+        // Top view: across = frequency, up = depth (Cmd: Q)
+        const float dDepth = -dy / juce::jmax (1.0f, topArea().getHeight()) * 100.0f;
+        for (auto& s : dragStarts)
+        {
+            setPlain (s.band, "freq", juce::jlimit (10.0f, 30000.0f, s.freq * ratio));
+            if (e.mods.isCommandDown()) setPlain (s.band, "q", juce::jlimit (0.025f, 40.0f, s.q * std::exp2 (-dy / 50.0f)));
+            else                        setPlain (s.band, "depth", juce::jlimit (0.0f, 100.0f, s.params.depth + dDepth));
+        }
+        return;
+    }
+
     // vertical: accumulate dB from each mouse step at the scale shown at that moment, so a scale that grows
     // while you drag past the edge never feeds back into the gain
-    const float pxPerDb = eqArea.getHeight() * 0.5f / displayRange;
+    const float pxPerDb = span.getHeight() * 0.5f / displayRange;
     dragDbAccum -= (e.position.y - lastDragY) * fine / pxPerDb;
     lastDragY = e.position.y;
     if (std::abs (dy) < 0.001f) dragDbAccum = 0.0f;   // axis locked horizontally, or back at the start
@@ -1585,10 +1640,12 @@ void EqDisplay::mouseMove (const juce::MouseEvent& e)
         hb = readoutBand;   // crossing the gap between the dot and its display
     readoutBand = hb;
     const int hd = hb < 0 ? dynHandleAt (e.position) : -1;
+    const int hdd = hb < 0 ? depthHandleAt (e.position) : -1;
+    if (hdd != hoverDepthBand) { hoverDepthBand = hdd; setMouseCursor (hdd >= 0 ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor); }
 
     // spectrum grab: freeze the analyser while hovering near its peaks
     int hp = -1;
-    const bool canGrab = analyzer.grab && analyzer.post && hb < 0 && hd < 0 && ! sketchMode && mouseInside;
+    const bool canGrab = analyzer.grab && analyzer.post && hb < 0 && hd < 0 && ! sketchMode && mouseInside && flatView();
     if (canGrab)
     {
         if (! grabFrozen) { grabFrozen = true; updatePeaks(); }
@@ -1614,7 +1671,7 @@ void EqDisplay::mouseMove (const juce::MouseEvent& e)
         hoverBand = hb; hoverDynBand = hd; hoverPeak = hp;
         setMouseCursor (sketchMode ? juce::MouseCursor::CrosshairCursor
                       : (part == Part::freq || part == Part::gain || part == Part::q) ? juce::MouseCursor::UpDownResizeCursor
-                      : hd >= 0 ? juce::MouseCursor::UpDownResizeCursor
+                      : (hd >= 0 || hdd >= 0) ? juce::MouseCursor::UpDownResizeCursor
                       : (hb >= 0 || hp >= 0) ? juce::MouseCursor::PointingHandCursor
                       : juce::MouseCursor::NormalCursor);
         curveLayer = {};
@@ -1626,7 +1683,7 @@ void EqDisplay::mouseExit (const juce::MouseEvent&)
 {
     mouseInside = false;
     if (drag == Drag::none) { readoutBand = -1; hoverPart = Part::none; }
-    hoverBand = hoverDynBand = hoverPeak = -1;
+    hoverBand = hoverDynBand = hoverPeak = hoverDepthBand = -1;
     if (grabFrozen) { grabFrozen = false; peaks.clear(); }
     curveLayer = {};
     repaint();
@@ -1637,6 +1694,12 @@ void EqDisplay::mouseDown (const juce::MouseEvent& e)
     grabKeyboardFocus();
     if (entry != nullptr) commitEntry (false);
     dragStart = e.position;
+
+    if (const int vb = viewButtonAt (e.position); vb >= 0)
+    {
+        if (! e.mods.isPopupMenu()) setView ((View) vb);
+        return;
+    }
 
     if (const auto part = partAt (e.position); part != Part::none && ! e.mods.isPopupMenu())
     {
@@ -1776,11 +1839,24 @@ void EqDisplay::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
+    // 3D view: drag a dot's shadow on the floor to move the band back / forward
+    if (const int db3 = depthHandleAt (e.position); db3 >= 0)
+    {
+        if (! selection.contains (db3)) select (db3);
+        drag = Drag::depth;
+        depthGrabOffset = depthHandle (db3).y - e.position.y;
+        const auto& p = bands[(size_t) db3];
+        dragStarts = { { db3, p.freq, p.gain, p.q, p.dynRange, p } };
+        proc.undoManager.beginNewTransaction ("Depth");
+        beginGesture (db3, "depth");
+        return;
+    }
+
     if (! plot.contains (e.position)) return;
 
     // spectrum grab: create a bell on the peak and drag its gain
     // (created only once the mouse actually moves, so a click or double-click on the line doesn't add a band)
-    if (hoverPeak >= 0 && grabFrozen)
+    if (hoverPeak >= 0 && grabFrozen && flatView())
     {
         drag = Drag::pendingGrab;
         pendingGrabHz = peaks[(size_t) hoverPeak].hz;
@@ -1790,7 +1866,7 @@ void EqDisplay::mouseDown (const juce::MouseEvent& e)
     }
 
     // drag the curve to create a band
-    if (std::abs (curveYAt (e.position.x) - e.position.y) < 7.0f)
+    if (flatView() && std::abs (curveYAt (e.position.x) - e.position.y) < 7.0f)
     {
         drag = Drag::pendingCurve;
         pendingDynamic = e.mods.isAltDown();
@@ -1864,6 +1940,10 @@ void EqDisplay::mouseDrag (const juce::MouseEvent& e)
 
         case Drag::bands:
             applyBandDrag (e);
+            break;
+
+        case Drag::depth:
+            setPlain (dragStarts.front().band, "depth", 100.0f * depthForFloorY (e.position.y + depthGrabOffset));
             break;
 
         case Drag::dynRange:
@@ -1943,7 +2023,19 @@ void EqDisplay::mouseDoubleClick (const juce::MouseEvent& e)
         showEntry (b, 0);
         return;
     }
-    if (! plot.contains (e.position) || dynHandleAt (e.position) >= 0) return;
+    if (! plot.contains (e.position) || dynHandleAt (e.position) >= 0 || depthHandleAt (e.position) >= 0 || viewButtonAt (e.position) >= 0) return;
+    if (! flatView())
+    {
+        // 3D: a band at the front plane where clicked; Top: at the clicked frequency and depth, 0 dB
+        float depth = 0.0f;
+        const auto pt = frontPointFor (e.position, depth);
+        const int nb = createBandAt (pt, false, e.mods.isAltDown(), e.mods.isAltDown() && e.mods.isShiftDown());
+        if (nb < 0) return;
+        if (depth > 0.0f) proc.setBandValue (nb, "depth", depth * 100.0f);
+        readParameters();
+        select (nb);
+        return;
+    }
     const int nb = createBandAt (e.position, false, e.mods.isAltDown(), e.mods.isAltDown() && e.mods.isShiftDown());
     if (nb >= 0) select (nb);
 }

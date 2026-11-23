@@ -75,7 +75,8 @@ bool FirWorker::update (bool force)
 
     bool changed = force || ! lastValid || ! juce::exactlyEqual (scale, lastScale);
     for (int b = 0; b < kMaxBands && ! changed; ++b)
-        changed = ! sameFilter (current[(size_t) b], lastSnapshot[(size_t) b]);
+        changed = ! sameFilter (current[(size_t) b], lastSnapshot[(size_t) b])
+               || current[(size_t) b].hasDepth() != lastSnapshot[(size_t) b].hasDepth();   // depth bands leave the FIR
     if (! changed) return false;
 
     lastSnapshot = current;
@@ -142,7 +143,7 @@ void FirWorker::computeLinear (float scale)
     for (int b = 0; b < kMaxBands; ++b)
     {
         const auto& p = current[(size_t) b];
-        if (! p.isActive()) continue;
+        if (! p.isActive() || p.hasDepth()) continue;   // depth bands run as IIR bands (Engine)
         auto& g = groups[(size_t) p.place];
         const auto& m = mags[(size_t) b];
         for (int k = 0; k < numBins; ++k) g[(size_t) k] *= m[(size_t) k];

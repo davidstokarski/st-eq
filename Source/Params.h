@@ -38,12 +38,13 @@ namespace ids
     inline const juce::String character = "character";
     inline const juce::String bypass    = "global_bypass";
     inline const juce::String panMode   = "pan_mode";
+    inline const juce::String mode3d    = "mode_3d";
 
     // Per-band parameter suffixes. Full ID: "b<n>_<suffix>", n = 1..24
     inline const juce::StringArray bandSuffixes {
         "used", "bypass", "shape", "freq", "gain", "q", "slope", "place", "gq",
         "dyn_range", "dyn_thresh", "dyn_auto", "dyn_attack", "dyn_release", "dyn_sc", "dyn_trig", "dyn_lo", "dyn_hi", "dyn_bypass",
-        "spectral", "spec_density", "spec_tilt"
+        "spectral", "spec_density", "spec_tilt", "depth"
     };
 
     inline juce::String band (int b, const juce::String& suffix) { return "b" + juce::String (b + 1) + "_" + suffix; }
@@ -67,11 +68,15 @@ struct BandParams
     bool dynBypass = false;
     bool spectral = false, specTilt = true;
     float specDensity = 50.0f;   // %
+    /** 3D mode: how far back the band sits (0..100 %). Effective value: 0 while 3D mode is off. */
+    float depth = 0.0f;
 
     bool isActive() const noexcept { return used && ! bypass; }
     bool isDynamic() const noexcept { return used && ! dynBypass && std::abs (dynRange) > 0.05f && st::dsp::eq::hasGain (shape); }
     /** Spectral dynamics: the dynamic gain is applied per frequency (linear phase, STFT). */
     bool isSpectral() const noexcept { return spectral && isDynamic(); }
+    /** 3D mode with some depth: boosts move back (wider, small room reflections), cuts move to the sides. */
+    bool hasDepth() const noexcept { return depth > 0.05f; }
     bool operator== (const BandParams& o) const noexcept
     {
         using juce::exactlyEqual;
@@ -80,7 +85,8 @@ struct BandParams
             && exactlyEqual (dynThresh, o.dynThresh) && dynAuto == o.dynAuto && exactlyEqual (attackMs, o.attackMs)
             && exactlyEqual (releaseMs, o.releaseMs) && sidechain == o.sidechain && trigger == o.trigger
             && exactlyEqual (trigLo, o.trigLo) && exactlyEqual (trigHi, o.trigHi) && dynBypass == o.dynBypass
-            && spectral == o.spectral && specTilt == o.specTilt && exactlyEqual (specDensity, o.specDensity);
+            && spectral == o.spectral && specTilt == o.specTilt && exactlyEqual (specDensity, o.specDensity)
+            && exactlyEqual (depth, o.depth);
     }
 };
 
@@ -97,13 +103,15 @@ struct ParamRefs
     {
         st::params::Ref used, bypass, shape, freq, gain, q, slope, place, gq,
                         dynRange, dynThresh, dynAuto, dynAttack, dynRelease, dynSc, dynTrig, dynLo, dynHi, dynBypass,
-                        spectral, specDensity, specTilt;
+                        spectral, specDensity, specTilt, depth;
     };
     std::array<Band, kMaxBands> bands;
-    st::params::Ref outGain, outPan, autoGain, gainScale, phaseInv, mode, resolution, character, bypass, panMode;
+    st::params::Ref outGain, outPan, autoGain, gainScale, phaseInv, mode, resolution, character, bypass, panMode, mode3d;
 
     void bind (juce::AudioProcessorValueTreeState&);
+    /** The band's values; depth is 0 while 3D mode is off. */
     BandParams readBand (int b) const noexcept;
+    bool is3D() const noexcept { return mode3d.getBool(); }
     float readGainScale() const noexcept { return gainScale.get() * 0.01f; }
 };
 

@@ -43,6 +43,7 @@ void ParamRefs::bind (juce::AudioProcessorValueTreeState& s)
         r.dynBypass.bind (s, id ("dyn_bypass"));
         r.spectral.bind (s, id ("spectral"));  r.specDensity.bind (s, id ("spec_density"));
         r.specTilt.bind (s, id ("spec_tilt"));
+        r.depth.bind (s, id ("depth"));
     }
     outGain.bind (s, ids::outGain);
     outPan.bind (s, ids::outPan);
@@ -54,6 +55,7 @@ void ParamRefs::bind (juce::AudioProcessorValueTreeState& s)
     character.bind (s, ids::character);
     bypass.bind (s, ids::bypass);
     panMode.bind (s, ids::panMode);
+    mode3d.bind (s, ids::mode3d);
 }
 
 BandParams ParamRefs::readBand (int b) const noexcept
@@ -82,6 +84,7 @@ BandParams ParamRefs::readBand (int b) const noexcept
     p.spectral = r.spectral.getBool();
     p.specDensity = r.specDensity.get();
     p.specTilt = r.specTilt.getBool();
+    p.depth = mode3d.getBool() ? juce::jlimit (0.0f, 100.0f, r.depth.get()) : 0.0f;
     return p;
 }
 
@@ -101,6 +104,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
         global->addChild (makeChoice (ids::character, "Character", characterNames, 0));
         global->addChild (makeBool (ids::bypass, "Bypass", false));
         global->addChild (makeChoice (ids::panMode, "Pan Mode", { "Left / Right", "Mid / Side" }, 0));
+        global->addChild (makeBool (ids::mode3d, "3D Mode", false));
         layout.add (std::move (global));
     }
 
@@ -136,6 +140,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
         group->addChild (makeBool (id ("spectral"), n + "Spectral Dynamics", false));
         group->addChild (makeFloat (id ("spec_density"), n + "Spectral Density", linear (0.0f, 100.0f, 0.01f), 50.0f, percentAttributes()));
         group->addChild (makeBool (id ("spec_tilt"), n + "Spectral Tilt", true));
+        group->addChild (makeFloat (id ("depth"), n + "Depth", linear (0.0f, 100.0f, 0.01f), 0.0f, percentAttributes()));
         layout.add (std::move (group));
     }
 

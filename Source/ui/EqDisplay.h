@@ -31,7 +31,13 @@ struct AnalyzerSettings
     Interaction (FabFilter Pro-style): double-click / drag the curve to create bands, drag dots (Shift fine,
     Cmd = Q, Alt constrains), wheel = Q (cut slopes step), Alt+wheel = dynamic range, Cmd+wheel = gain,
     Alt-click = bypass, rubber-band and Cmd/Shift-click selection, right-click menus, Delete removes,
-    Cmd-C / Cmd-V copy and paste, double-click a dot to type a frequency (Tab: gain, Q). */
+    Cmd-C / Cmd-V copy and paste, double-click a dot to type a frequency (Tab: gain, Q).
+
+    3D mode (the instance's mode_3d parameter): every band also has a depth. Views (buttons top right, kept in
+    uiState "view3d"; compact strips follow the instance): 3D (perspective: frequency across, gain up, depth
+    into the screen; each band's curve stands at its depth, the total curve runs through the bands' depths,
+    the spectrum on the back wall; drag a dot for frequency / gain, its shadow on the floor for depth), Top
+    (frequency across, depth up: drag a dot for frequency / depth) and Front (the normal display). */
 class EqDisplay : public juce::Component, public juce::SettableTooltipClient
 {
 public:
@@ -50,6 +56,18 @@ public:
     void splitSelected (bool midSide);
     std::function<void()> onSelectionChanged;
     std::function<void (double dt)> onFrame;
+
+    // 3D mode
+    enum class View { threeD, top, front };
+    /** The view shown: the instance's choice while its 3D mode is on, else Front. */
+    View getView() const;
+    void setView (View);
+    /** 3D view: screen position of (frequency, display dB, depth 0..1). */
+    juce::Point<float> project (float hz, float db, float depth) const noexcept;
+    /** 3D view: the floor point under a band's dot (drag it to change the depth). */
+    juce::Point<float> depthHandle (int band) const;
+    /** View buttons (3D, Top, Front), shown while 3D mode is on (not in compact rows). */
+    juce::Rectangle<float> getViewButton (View) const;
 
     // settings
     /** EQ scale. Auto (default): fits the bands and the curve with some headroom, between 3 and 30 dB; grows
@@ -172,7 +190,7 @@ private:
     juce::Point<float> mousePos { -100.0f, -100.0f };
     bool mouseInside = false;
 
-    enum class Drag { none, bands, dynRange, rubber, sketch, pendingCurve, pendingGrab, triggerLo, triggerHi, value, solo };
+    enum class Drag { none, bands, dynRange, rubber, sketch, pendingCurve, pendingGrab, triggerLo, triggerHi, value, solo, depth };
 
     // --- parameter display (next to the hovered dot): live values you can drag / wheel / double-click, and quick
     //     buttons (shape, bypass, solo: click and hold, drag to move the band while listening, delete) ---------
@@ -223,6 +241,26 @@ private:
     // value entry
     std::unique_ptr<juce::TextEditor> entry, retiredEntry;
     int entryBand = -1, entryField = 0;
+
+    // --- 3D mode ---------------------------------------------------------------------------------------
+    bool mode3d = false;
+    int hoverDepthBand = -1;
+    float depthGrabOffset = 0.0f;
+    bool flatView() const { return getView() == View::front; }
+    juce::Rectangle<float> planeAt (float depth) const noexcept;   // 3D: the (frequency x gain) plane at a depth
+    float depthForFloorY (float y) const noexcept;
+    juce::Rectangle<float> topArea() const noexcept;
+    float topY (float depth) const noexcept;
+    float topDepth (float y) const noexcept;
+    int depthHandleAt (juce::Point<float>) const;
+    int viewButtonAt (juce::Point<float>) const;
+    /** Depth (0..1) of the total curve at each point: the bands' depths weighted by how much each one acts there. */
+    void curveDepths (std::array<float, kPoints>&) const;
+    /** Screen point for a click in the 3D / Top view, as the same band would sit in the Front view (+ its depth). */
+    juce::Point<float> frontPointFor (juce::Point<float>, float& depth) const;
+    void paint3D (juce::Graphics&);
+    void paintTop (juce::Graphics&);
+    void paintViewButtons (juce::Graphics&);
 
     // --- helpers -----------------------------------------------------------------------------------
     float analyzerY (float db) const noexcept;

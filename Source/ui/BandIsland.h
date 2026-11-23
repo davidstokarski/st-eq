@@ -92,12 +92,12 @@ public:
     /** Geometry is written in reference units measured from the original (island width 470 units) and drawn
         at kScale, which makes the island ~38 % of the window width like the reference. */
     static constexpr float kScale = 0.85f;
-    static constexpr int collapsedWidth = 470, expandedExtra = 148;               // reference units
+    static constexpr int collapsedWidth = 470, expandedExtra = 148, depthExtra = 74;   // reference units (depth: 3D mode)
     static constexpr float bodyHeight = 93.0f, bulge = 7.0f, tabTop = -20.0f;      // reference units
     static constexpr int marginX = 14, marginTop = 32, marginBottom = 16;          // component pixels
     static constexpr int height = marginTop + (int) ((bodyHeight + bulge) * kScale) + marginBottom;
     static constexpr float gainCentreX = 233.5f;
-    int getIslandWidth() const noexcept { return juce::roundToInt (((float) collapsedWidth + (float) expandedExtra * expAmt.current) * kScale); }
+    int getIslandWidth() const noexcept { return juce::roundToInt (((float) collapsedWidth + shift()) * kScale); }
     int getPreferredWidth() const noexcept { return getIslandWidth() + 2 * marginX; }
     /** Component x of the gain knob centre (the island is placed so this sits under the band). */
     static constexpr int anchorX = marginX + (int) (gainCentreX * kScale);
@@ -117,7 +117,7 @@ private:
     std::unique_ptr<ShapeButton> shape;
     std::unique_ptr<PlacementButton> placement;
     std::unique_ptr<st::Dropdown> slope;
-    std::unique_ptr<st::Knob> freq, gain, q, attack, release, density;
+    std::unique_ptr<st::Knob> freq, gain, q, attack, release, density, depth;
     std::unique_ptr<juce::Component> threshold, autoBox, triggerButton;
 
     IslandButton bypassButton { st::icons::Icon::power, "Band on / off (Alt-click the dot)" };
@@ -138,6 +138,7 @@ private:
     juce::Path outline;
     juce::Image backgroundCache;
     float cacheScale = 0.0f;
+    bool last3d = false;
     bool lastDynamic = false, lastBypass = false, lastDynBypass = false, lastGq = false, lastSc = false, lastSpectral = false, lastTilt = false;
     Shape lastShape = Shape::bell;
     int lastHoverMask = 0;
@@ -145,10 +146,13 @@ private:
     juce::Point<float> toLocal (float x, float y) const noexcept { return { (float) marginX + x * kScale, (float) marginTop + y * kScale }; }
     static float fs (float referenceSize) noexcept { return referenceSize * kScale; }
     juce::Rectangle<int> box (float x, float y, float w, float h) const noexcept;
-    float shift() const noexcept { return (float) expandedExtra * expAmt.current; }
+    /** Dynamics section width (moves Q) and, in 3D mode, the depth knob too (moves the right column). */
+    float dynShift() const noexcept { return (float) expandedExtra * expAmt.current; }
+    float shift() const noexcept { return dynShift() + (float) depthExtra * depthAmt.current; }
+    float depthX() const noexcept { return 328.7f + dynShift() + 66.0f; }
     float attackX() const noexcept { return 331.0f - 4.0f * specAmt.current; }
     float releaseX() const noexcept { return 377.0f - 20.0f * specAmt.current; }
-    st::Animated dynAmt, expAmt, specAmt;   // 0..1: dynamics tab present, dynamics section expanded, spectral (eased)
+    st::Animated dynAmt, expAmt, specAmt, depthAmt;   // 0..1: dynamics tab present, dynamics section expanded, spectral, 3D mode (eased)
     bool animating = false;
     void animateStep (double dt);
     bool isDynamic() const;

@@ -444,6 +444,191 @@ static void testAutomationClicks (StEqProcessor& p)
     clearBands (p);
 }
 
+namespace
+{
+/** Mid and side output levels (dB re the input amplitude) of a sine at hz fed in the mid (L = R) or the side
+    (L = -R), measured by DFT over the last half second. */
+std::pair<double, double> midSideGainDb (StEqProcessor& p, double hz, bool sideInput, double fs = 48000.0, int seconds = 2)
+{
+    juce::AudioBuffer<float> buf (2, 512);
+    juce::MidiBuffer midi;
+    const int total = (int) (seconds * fs), measureFrom = total - (int) (0.5 * fs);
+    std::complex<double> sm, ss;
+    int count = 0;
+    const double a = 0.25;
+    for (int pos = 0; pos < total; pos += 512)
+    {
+        for (int i = 0; i < 512; ++i)
+        {
+            const float v = (float) (a * std::sin (juce::MathConstants<double>::twoPi * hz * (pos + i) / fs));
+            buf.setSample (0, i, v);
+            buf.setSample (1, i, sideInput ? -v : v);
+        }
+        p.processBlock (buf, midi);
+        for (int i = 0; i < 512 && pos >= measureFrom; ++i)
+        {
+            const double t = (pos + i) / fs;
+            const double m = 0.5 * (buf.getSample (0, i) + buf.getSample (1, i)), s = 0.5 * (buf.getSample (0, i) - buf.getSample (1, i));
+            const auto e = std::polar (1.0, -juce::MathConstants<double>::twoPi * hz * t);
+            sm += m * e;
+            ss += s * e;
+            ++count;
+        }
+    }
+    return { toDb (2.0 * std::abs (sm) / count / a), toDb (2.0 * std::abs (ss) / count / a) };
+}
+}
+
+/** 3D mode: depth moves a boost back (width + reflections) and a cut out of the centre, only while 3D mode is on,
+    in every processing mode, without clicks; the parameters survive a state round trip. */
+static void testDepth (StEqProcessor& p)
+{
+    std::cout << "3D mode (depth)\n";
+    p.prepareToPlay (48000.0, 512);
+    setMode (p, ProcMode::zeroLatency);
+    clearBands (p);
+    setParam (p, ids::mode3d, 0.0f);
+
+    // 3D mode off: depth does nothing (bit for bit)
+    int b = p.addBand (Shape::bell, 1000.0f, 9.0f, 1.0f);
+    auto h0 = impulse (p, 4096);
+    setParam (p, ids::band (b, "depth"), 100.0f);
+    auto h1 = impulse (p, 4096);
+    float diff = 0.0f;
+    for (int c = 0; c < 2; ++c)
+        for (size_t i = 0; i < h0[0].size(); ++i) diff = juce::jmax (diff, std::abs (h0[(size_t) c][i] - h1[(size_t) c][i]));
+    check (diff == 0.0f, "3D mode off: depth has no effect");
+    check (p.getBand (b).depth == 0.0f, "3D mode off: effective depth reads 0");
+
+    // 3D mode on with depth 0: the same EQ
+    setParam (p, ids::mode3d, 1.0f);
+    setParam (p, ids::band (b, "depth"), 0.0f);
+    auto h2 = impulse (p, 4096);
+    diff = 0.0f;
+    for (int c = 0; c < 2; ++c)
+        for (size_t i = 0; i < h0[0].size(); ++i) diff = juce::jmax (diff, std::abs (h0[(size_t) c][i] - h2[(size_t) c][i]));
+    check (diff < 1.0e-6f, "3D mode on, depth 0: same as a plain EQ");
+
+    // a boost moved back: the mono input gains side (width) in the band, less direct mid boost
+    const auto flat = midSideGainDb (p, 1000.0, false);
+    setParam (p, ids::band (b, "depth"), 100.0f);
+    p.getEngine().reset();
+    const auto deep = midSideGainDb (p, 1000.0, false);
+    const auto outside = midSideGainDb (p, 100.0, false);
+    std::cout << "  boost +9 dB @1k, mono in: depth 0 mid " << juce::String (flat.first, 2) << " side " << juce::String (flat.second, 1)
+              << " | depth 100 mid " << juce::String (deep.first, 2) << " side " << juce::String (deep.second, 1) << " dB\n";
+    check (flat.second < -80.0 && std::abs (flat.first - 9.0) < 0.3, "depth 0: plain +9 dB boost, no side");
+    check (deep.second > -14.0, "depth 100: the boost gets wide (side " + juce::String (deep.second, 1) + " dB)");
+    check (deep.first > 0.0 && deep.first < flat.first, "depth 100: less direct mid boost than at depth 0");
+    check (std::abs (outside.first) < 0.5 && outside.second < -20.0, "depth 100: well outside the band (100 Hz) almost nothing changes (mid "
+           + juce::String (outside.first, 2) + ", side " + juce::String (outside.second, 1) + " dB)");
+
+    // a cut moved back: the centre is untouched at 100, the sides keep the cut
+    clearBands (p);
+    b = p.addBand (Shape::bell, 1000.0f, -12.0f, 1.0f);
+    setParam (p, ids::band (b, "depth"), 100.0f);
+    p.getEngine().reset();
+    const auto midIn = midSideGainDb (p, 1000.0, false);
+    const auto sideIn = midSideGainDb (p, 1000.0, true);
+    check (std::abs (midIn.first) < 0.3, "depth 100 cut: centre untouched (" + juce::String (midIn.first, 2) + " dB)");
+    check (std::abs (sideIn.second + 12.0) < 0.5, "depth 100 cut: sides cut (" + juce::String (sideIn.second, 2) + " dB)");
+    setParam (p, ids::band (b, "depth"), 50.0f);
+    p.getEngine().reset();
+    const auto half = midSideGainDb (p, 1000.0, false);
+    check (half.first < -1.0 && half.first > -11.0, "depth 50 cut: part of the centre cut (" + juce::String (half.first, 2) + " dB)");
+
+    // natural and linear phase: the same (linear phase runs depth bands as IIR bands, left out of the FIR)
+    for (auto mode : { ProcMode::naturalPhase, ProcMode::linearPhase })
+    {
+        setMode (p, mode);
+        setParam (p, ids::band (b, "depth"), 100.0f);
+        p.refreshFirNow();
+        p.getEngine().reset();
+        const int lat = p.getLatencySamples();
+        const auto mi = midSideGainDb (p, 1000.0, false);
+        const auto si = midSideGainDb (p, 1000.0, true);
+        const juce::String name = mode == ProcMode::naturalPhase ? "NP" : "LP";
+        check (std::abs (mi.first) < 0.5 && std::abs (si.second + 12.0) < 0.6,
+               name + ": depth 100 cut leaves the centre, cuts the sides (" + juce::String (mi.first, 2) + " / " + juce::String (si.second, 2) + " dB)");
+        setParam (p, ids::band (b, "depth"), 0.0f);
+        p.refreshFirNow();
+        p.getEngine().reset();
+        const auto m0 = midSideGainDb (p, 1000.0, false);
+        check (std::abs (m0.first + 12.0) < 0.5, name + ": depth 0 cut is a normal cut (" + juce::String (m0.first, 2) + " dB)");
+        check (p.getLatencySamples() == lat, name + ": depth doesn't change the latency");
+    }
+    setMode (p, ProcMode::zeroLatency);
+
+    // sweeping depth (and a boost turning into a cut) doesn't click
+    clearBands (p);
+    b = p.addBand (Shape::bell, 2000.0f, 9.0f, 1.0f);
+    {
+        juce::AudioBuffer<float> buf (2, 64);
+        juce::MidiBuffer midi;
+        double phase = 0.0, worst = 0.0, prev1 = 0.0, prev2 = 0.0;
+        bool finite = true;
+        const int blocks = (int) (2.0 * 48000.0 / 64);
+        for (int blk = 0; blk < blocks; ++blk)
+        {
+            const float t = (float) blk / (float) blocks;
+            setParam (p, ids::band (b, "depth"), 100.0f * (t < 0.5f ? t * 2.0f : 2.0f - t * 2.0f));
+            if (blk == blocks / 3) setParam (p, ids::band (b, "depth"), 100.0f);   // a jump: ramps
+            for (int i = 0; i < 64; ++i)
+            {
+                const float v = 0.25f * (float) std::sin (phase);
+                phase += juce::MathConstants<double>::twoPi * 2000.0 / 48000.0;
+                buf.setSample (0, i, v); buf.setSample (1, i, v);
+            }
+            p.processBlock (buf, midi);
+            for (int i = 0; i < 64; ++i)
+            {
+                const double y = buf.getSample (0, i);
+                finite &= std::isfinite (y);
+                if (blk > 20) worst = std::max (worst, std::abs (y - 2.0 * prev1 + prev2));
+                prev2 = prev1; prev1 = y;
+            }
+        }
+        const double w = juce::MathConstants<double>::twoPi * 2000.0 / 48000.0;
+        const double limit = 4.0 * 0.25 * juce::Decibels::decibelsToGain (9.0) * 2.0 * w * w + 0.02;
+        check (finite && worst < limit, "depth sweep: no clicks (2nd diff " + juce::String (worst, 4) + ", limit " + juce::String (limit, 4) + ")");
+    }
+
+    // stress: every band deep, random shapes, all modes
+    {
+        juce::Random rng (77);
+        bool finite = true;
+        float peak = 0.0f;
+        for (auto mode : { ProcMode::zeroLatency, ProcMode::naturalPhase, ProcMode::linearPhase })
+        {
+            setMode (p, mode);
+            clearBands (p);
+            for (int k = 0; k < kMaxBands; ++k)
+            {
+                const int nb = p.addBand ((Shape) rng.nextInt (10), 20.0f * std::pow (1000.0f, rng.nextFloat()), rng.nextFloat() * 36.0f - 18.0f, 0.3f + rng.nextFloat() * 4.0f, rng.nextInt (10));
+                setParam (p, ids::band (nb, "depth"), rng.nextFloat() * 100.0f);
+            }
+            p.refreshFirNow();
+            peak = juce::jmax (peak, runNoise (p, 200, 512, finite));
+        }
+        check (finite && peak < 200.0f, "24 deep bands, all modes: finite (peak " + juce::String (peak, 2) + ")");
+    }
+    setMode (p, ProcMode::zeroLatency);
+
+    // state round trip
+    clearBands (p);
+    b = p.addBand (Shape::bell, 500.0f, 4.0f, 1.0f);
+    setParam (p, ids::band (b, "depth"), 63.0f);
+    juce::MemoryBlock state;
+    p.getStateInformation (state);
+    setParam (p, ids::mode3d, 0.0f);
+    setParam (p, ids::band (b, "depth"), 0.0f);
+    p.setStateInformation (state.getData(), (int) state.getSize());
+    check (p.refs.is3D() && std::abs (p.getBand (b).depth - 63.0f) < 0.01f, "3D mode and depth survive a state round trip");
+
+    setParam (p, ids::mode3d, 0.0f);
+    clearBands (p);
+}
+
 /** Deep check: state round trip of the newer parameters (spectral, bypass, pan mode, multiview-related none). */
 static void testStateNewParams (StEqProcessor& p)
 {
@@ -926,6 +1111,112 @@ static void testInteraction (StEqProcessor& p)
     clearBands (p);
 }
 
+/** 3D mode in the display: views, dots in 3D / Top, depth by the floor handle and by Top-view drags, new bands
+    in the Top view, the island's depth knob, the multiview strip following the instance, painting. */
+static void testDisplay3D (StEqProcessor& p)
+{
+    std::cout << "3D mode display\n";
+    using View = EqDisplay::View;
+    clearBands (p);
+    p.presets.loadPreset (0);
+    setParam (p, ids::mode3d, 0.0f);
+    const int b = p.addBand (Shape::bell, 1000.0f, 6.0f, 1.0f);
+    setParam (p, ids::band (b, "depth"), 50.0f);
+    p.uiState.setProperty ("selection", juce::String (b), nullptr);
+    p.uiState.setProperty ("primary", b, nullptr);
+    p.uiState.setProperty ("view3d", 0, nullptr);
+
+    std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
+    ed->setSize (StEqEditor::designWidth, StEqEditor::designHeight);
+    auto& e = *dynamic_cast<StEqEditor*> (ed.get());
+    auto& d = e.getDisplay();
+    d.setDisplayRange (2);
+    d.syncFromParameters();
+    MouseSim m { d, {} };
+
+    check (d.getView() == View::front, "3D mode off: front view");
+    const int narrow = e.getBandPanel() != nullptr ? e.getBandPanel()->getPreferredWidth() : 0;
+
+    setParam (p, ids::mode3d, 1.0f);
+    d.syncFromParameters();
+    check (d.getView() == View::threeD, "3D mode on: 3D view");
+    const float range = d.getDisplayRangeDb();
+    check (d.dotPosition (b).getDistanceFrom (d.project (1000.0f, 6.0f, 0.5f)) < 0.5f, "3D: the dot sits at its frequency, gain and depth");
+    check (d.project (1000.0f, 0.0f, 1.0f).y < d.project (1000.0f, 0.0f, 0.0f).y
+           && std::abs (d.project (20000.0f, 0.0f, 1.0f).x - d.project (20.0f, 0.0f, 1.0f).x) < std::abs (d.project (20000.0f, 0.0f, 0.0f).x - d.project (20.0f, 0.0f, 0.0f).x),
+           "3D: the back is higher and narrower (perspective)");
+
+    // drag the floor handle to the back
+    m.drag (d.depthHandle (b), d.project (1000.0f, -range, 1.0f));
+    check (p.getBand (b).depth > 95.0f, "3D: dragging the floor handle back sets depth 100 (" + juce::String (p.getBand (b).depth, 1) + ")");
+    d.syncFromParameters();
+    m.drag (d.depthHandle (b), d.project (1000.0f, -range, 0.25f));
+    check (std::abs (p.getBand (b).depth - 25.0f) < 3.0f, "3D: ... and forward to 25 (" + juce::String (p.getBand (b).depth, 1) + ")");
+
+    // dragging the dot in 3D: frequency and gain at the band's depth
+    d.syncFromParameters();
+    const float w = p.getBand (b).depth * 0.01f;
+    m.drag (d.dotPosition (b), d.project (2000.0f, 3.0f, w));
+    auto bp = p.getBand (b);
+    check (std::abs (std::log2 (bp.freq / 2000.0f)) < 0.06f && std::abs (bp.gain - 3.0f) < 0.4f && std::abs (bp.depth - 25.0f) < 3.0f,
+           "3D: dragging the dot moves frequency / gain (" + juce::String (bp.freq, 0) + " Hz, " + juce::String (bp.gain, 2) + " dB)");
+
+    // view buttons
+    m.click (d.getViewButton (View::top).getCentre());
+    check (d.getView() == View::top, "view button: Top");
+    d.syncFromParameters();
+    const auto dot = d.dotPosition (b);
+    m.drag (dot, dot.translated (0.0f, -60.0f));
+    bp = p.getBand (b);
+    check (bp.depth > 35.0f && std::abs (std::log2 (bp.freq / 2000.0f)) < 0.06f && std::abs (bp.gain - 3.0f) < 0.01f,
+           "Top: dragging up moves the band back, gain unchanged (depth " + juce::String (bp.depth, 1) + ")");
+    // double-click in the Top view: a band at that frequency and depth
+    d.syncFromParameters();
+    const int before = p.getNumUsedBands();
+    m.doubleClick ({ d.xForHz (300.0f), d.dotPosition (b).y });
+    int nb = -1;
+    for (int k = 0; k < kMaxBands; ++k) if (k != b && p.getBand (k).used) nb = k;
+    check (p.getNumUsedBands() == before + 1 && nb >= 0 && std::abs (p.getBand (nb).depth - p.getBand (b).depth) < 3.0f
+           && std::abs (std::log2 (p.getBand (nb).freq / 300.0f)) < 0.1f,
+           "Top: double-click adds a band at that frequency and depth");
+
+    // painting every view
+    for (auto v : { View::threeD, View::top, View::front })
+    {
+        d.setView (v);
+        juce::Image img (juce::Image::ARGB, d.getWidth(), d.getHeight(), true);
+        juce::Graphics g (img);
+        d.paintEntireComponent (g, true);
+    }
+    check (true, "all views paint");
+    m.click (d.getViewButton (View::threeD).getCentre());
+    check (d.getView() == View::threeD, "view button: 3D");
+
+    // island depth knob (a fresh island in 3D mode is wider)
+    e.getDisplay().setSelection ({ b }, b);
+    const int wide = e.getBandPanel() != nullptr ? e.getBandPanel()->getPreferredWidth() : 0;
+    check (narrow > 0 && wide > narrow + 40, "island: wider with the depth knob (" + juce::String (narrow) + " -> " + juce::String (wide) + ")");
+
+    // the multiview strip follows the instance's view
+    {
+        auto strip = p.createStripView();
+        strip->setSize (600, 150);
+        auto* es = dynamic_cast<EqStrip*> (strip.get());
+        check (es != nullptr && es->getDisplay().getView() == View::threeD, "multiview strip: 3D like the instance");
+        juce::Image img (juce::Image::ARGB, 600, 150, true);
+        juce::Graphics g (img);
+        strip->paintEntireComponent (g, true);
+    }
+
+    // 3D off: front again
+    setParam (p, ids::mode3d, 0.0f);
+    d.syncFromParameters();
+    check (d.getView() == View::front && d.dotPosition (b).getDistanceFrom ({ d.xForHz (p.getBand (b).freq), d.yForDb (p.getBand (b).gain) }) < 0.5f,
+           "3D mode off: back to the front view");
+    ed.reset();
+    clearBands (p);
+}
+
 static void testInstancesAndOutput (StEqProcessor& p)
 {
     std::cout << "Typed values\n";
@@ -1307,11 +1598,13 @@ static int runTests()
     testSpectral (p);
     testResponseSweep (p);
     testAutomationClicks (p);
+    testDepth (p);
     testStateNewParams (p);
     testStress (p);
     testState (p);
     testCpu (p);
     testInteraction (p);
+    testDisplay3D (p);
     testInstancesAndOutput (p);
     testUiMonkey (p);
    #if JUCE_MAC
@@ -1615,6 +1908,21 @@ struct SnapshotApp : juce::JUCEApplicationBase
             d.mouseMove (m.ev (d.dotPosition (2), {}));
             d.mouseMove (m.ev (d.getReadoutPart (2, "gain").getCentre(), {}));
         } });
+        auto deep = [&p, load, selectBands] (int view)
+        {
+            load ("Vocal Presence");
+            setParam (p, ids::mode3d, 1.0f);
+            const float depths[] = { 0.0f, 35.0f, 80.0f, 55.0f, 20.0f, 65.0f };
+            for (int k = 0; k < kMaxBands; ++k)
+                if (p.getBand (k).used) setParam (p, ids::band (k, "depth"), depths[k % 6]);
+            p.uiState.setProperty ("view3d", view, nullptr);
+            p.uiState.setProperty ("autoRange", true, nullptr);
+            selectBands ("2", 2);
+        };
+        snap->jobs.push_back ({ [deep] { deep (0); }, "16_3d_view" });
+        snap->jobs.push_back ({ [deep] { deep (1); }, "17_top_view" });
+        snap->jobs.push_back ({ [deep] { deep (2); }, "18_3d_mode_front" });
+        snap->jobs.push_back ({ [&p] { setParam (p, ids::mode3d, 0.0f); p.uiState.setProperty ("view3d", 0, nullptr); }, "19_3d_off" });
         snap->startTimerHz (60);
     }
 };

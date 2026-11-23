@@ -56,6 +56,26 @@ void Engine::prepare (double sr, int maxBlockSize, int numChannels, ProcMode mod
     bypassMix.setCurrentAndTarget (0.0f);
     ms.setSize (2, kSubBlock, false, true, true);
 
+    // depth: early reflections between 5 and 31 ms (alternating sides), damped above ~7 kHz; short allpasses
+    // (1.7 / 3.1 / 4.3 ms, slightly different per band so neighbouring bands don't fuse) decorrelate the side
+    static constexpr float tapMs[6] = { 5.3f, 8.9f, 13.1f, 17.6f, 23.4f, 31.2f };
+    static constexpr float tapL[6] = { 0.42f, 0.10f, 0.30f, 0.07f, 0.20f, 0.08f };
+    static constexpr float tapR[6] = { 0.12f, 0.38f, 0.08f, 0.27f, 0.10f, 0.16f };
+    const int roomLen = (int) juce::nextPowerOfTwo ((int) std::ceil (0.034 * sampleRate) + kSubBlock + 2);
+    roomMask = roomLen - 1;
+    for (size_t i = 0; i < 6; ++i)
+        roomTaps[i] = { juce::jmax (1, juce::roundToInt (tapMs[i] * 0.001 * sampleRate)), tapL[i], tapR[i] };
+    roomLpCoeff = (float) (1.0 - std::exp (-2.0 * juce::MathConstants<double>::pi * 7000.0 / sampleRate));
+    depthStep = (float) (1.0 / (0.03 * sampleRate));   // 30 ms ramps
+    for (size_t bi = 0; bi < bands.size(); ++bi)
+    {
+        auto& b = bands[bi];
+        b.roomBuf.assign ((size_t) roomLen, 0.0f);
+        static constexpr float apMs[3] = { 1.7f, 3.1f, 4.3f };
+        for (size_t k = 0; k < 3; ++k)
+            b.apBuf[k].assign ((size_t) juce::jmax (1, juce::roundToInt (apMs[k] * (1.0f + 0.037f * (float) bi) * 0.001 * sampleRate)), 0.0f);
+    }
+
     for (auto& b : bands)
     {
         for (auto& d : b.detector) d.prepare (2);
@@ -113,6 +133,12 @@ void Engine::reset()
         b.env = 0.0f;
         b.dynDb = 0.0f;
         b.avgDb = -40.0f;
+        std::fill (b.roomBuf.begin(), b.roomBuf.end(), 0.0f);
+        for (auto& a : b.apBuf) std::fill (a.begin(), a.end(), 0.0f);
+        b.apPos = {};
+        b.roomPos = 0;
+        b.roomLp = 0.0f;
+        b.depthNow = b.params.depth * 0.01f;
     }
     if (convolver.isPrepared()) convolver.reset();
     spectral.reset();
@@ -278,6 +304,80 @@ void Engine::applyBand (Band& b, EqCascade& cascade, float* const* io, int n) no
     cascade.advance();
 }
 
+void Engine::applyBandWithDepth (Band& b, int index, float* const* io, int n) noexcept
+{
+    const float target = b.params.depth * 0.01f;
+    if (numCh < 2 || (target <= 0.0f && b.depthNow <= 0.0f))
+    {
+        b.depthNow = 0.0f;
+        applyBand (b, b.filter, io, n);
+        return;
+    }
+    juce::ignoreUnused (index);
+
+    float in[2][kSubBlock];
+    std::copy (io[0], io[0] + n, in[0]);
+    std::copy (io[1], io[1] + n, in[1]);
+    applyBand (b, b.filter, io, n);
+
+    // boost or cut: by the band's gain right now (cut, notch, band pass and all pass shapes count as cuts)
+    const auto& p = b.params;
+    const bool boost = st::dsp::eq::hasGain (p.shape) && (p.gain + (b.dynamic && ! b.spectral ? b.dynDb : 0.0f)) * global.gainScale > 0.0f;
+
+    constexpr float direct = 0.6f, width = 0.42f, room = 0.6f, apG = 0.5f;
+    const int mask = roomMask;
+    float* rb = b.roomBuf.data();
+    float d = b.depthNow;
+    for (int i = 0; i < n; ++i)
+    {
+        d = d < target ? juce::jmin (target, d + depthStep) : juce::jmax (target, d - depthStep);
+        const float dl = io[0][i] - in[0][i], dr = io[1][i] - in[1][i];
+        const float m = 0.5f * (dl + dr), s = 0.5f * (dl - dr);
+
+        // early reflections of the boost's mid part (always read, so tails fade out when it turns into a cut)
+        b.roomLp += roomLpCoeff * ((boost ? m : 0.0f) - b.roomLp);
+        rb[b.roomPos] = b.roomLp;
+        float erL = 0.0f, erR = 0.0f;
+        for (const auto& t : roomTaps)
+        {
+            const float v = rb[(b.roomPos - t.delay) & mask];
+            erL += t.gl * v;
+            erR += t.gr * v;
+        }
+        b.roomPos = (b.roomPos + 1) & mask;
+
+        float outL, outR;
+        if (boost)
+        {
+            // decorrelated copy of the mid change, into the side (cancels in mono)
+            float x = m;
+            for (size_t k = 0; k < 3; ++k)
+            {
+                auto& buf = b.apBuf[k];
+                int& pos = b.apPos[k];
+                const float delayed = buf[(size_t) pos];
+                const float v = x + apG * delayed;
+                buf[(size_t) pos] = v;
+                pos = pos + 1 < (int) buf.size() ? pos + 1 : 0;
+                x = delayed - apG * v;
+            }
+            const float sL = direct * m + s + width * x;
+            const float sR = direct * m - s - width * x;
+            outL = in[0][i] + (1.0f - d) * dl + d * sL;
+            outR = in[1][i] + (1.0f - d) * dr + d * sR;
+        }
+        else
+        {
+            // the cut leaves the centre: its mid part fades with depth, the side part stays
+            outL = in[0][i] + (1.0f - d) * m + s;
+            outR = in[1][i] + (1.0f - d) * m - s;
+        }
+        io[0][i] = outL + d * room * erL;
+        io[1][i] = outR + d * room * erR;
+    }
+    b.depthNow = d;
+}
+
 //==============================================================================
 void Engine::process (float* const* io, int numChannels, const float* const* sc, int numSc, int n) noexcept
 {
@@ -348,7 +448,17 @@ void Engine::process (float* const* io, int numChannels, const float* const* sc,
             {
                 if (! b.wasActive) { b.filter.reset(); updateBandDesign (b, false); }
                 else if (b.designDirty || (b.dynamic && std::abs (b.dynDb - b.designedDyn) > 0.05f)) updateBandDesign (b, true);   // 0.05 dB steps, glided
-                applyBand (b, b.filter, sub, k);
+                applyBandWithDepth (b, bi, sub, k);
+            }
+            else if (b.params.hasDepth())
+            {
+                // linear phase: depth bands are IIR bands (the FIR leaves them out)
+                if (! b.wasActive || ! b.wasIir) { b.filter.reset(); updateBandDesign (b, false); }
+                else if (b.designDirty || (b.dynamic && std::abs (b.dynDb - b.designedDyn) > 0.05f)) updateBandDesign (b, true);
+                applyBandWithDepth (b, bi, sub, k);
+                b.wasIir = true;
+                b.wasActive = true;
+                continue;
             }
             else if (b.dynamic && ! b.spectral)
             {
@@ -362,6 +472,7 @@ void Engine::process (float* const* io, int numChannels, const float* const* sc,
                 }
                 applyBand (b, b.delta, sub, k);
             }
+            b.wasIir = false;
             b.wasActive = true;
         }
     }
