@@ -1,8 +1,8 @@
 # Whole-plugin tests: processor response / stress tests + editor snapshots (PNG).
-#   StEqPluginTests [--snapshot <dir>]
+#   StEqPluginTests [--snapshot <dir>] [--video <dir> [scene ...]]
 # Links the plugin's shared-code library, so it exercises the real processor.
 juce_add_console_app(StEqPluginTests PRODUCT_NAME "StEqPluginTests")
-target_sources(StEqPluginTests PRIVATE PluginTests.cpp)
+target_sources(StEqPluginTests PRIVATE PluginTests.cpp VideoRender.cpp)
 target_compile_features(StEqPluginTests PRIVATE cxx_std_20)
 target_link_libraries(StEqPluginTests PRIVATE STEQ)
 target_include_directories(StEqPluginTests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../Source")

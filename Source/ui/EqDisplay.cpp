@@ -870,9 +870,9 @@ void EqDisplay::paintFrost (juce::Graphics& g)
         frostImage = juce::Image (juce::Image::ARGB, iw, ih, false, juce::SoftwareImageType());
 
     // the 3D / Top views are costly to draw twice: while the island stays put, their blurred copy is refreshed
-    // every third frame only (blurred, the lag doesn't show)
+    // every fifth frame only (blurred, the lag doesn't show)
     const bool front = getView() == View::front;
-    const bool reuse = ! front && area == frostArea && (++frostFrame % 3) != 0;
+    const bool reuse = ! front && area == frostArea && (++frostFrame % 5) != 0;
     frostArea = area;
     if (! reuse)
     {
