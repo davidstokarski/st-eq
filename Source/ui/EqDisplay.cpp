@@ -857,10 +857,10 @@ void EqDisplay::paintFrost (juce::Graphics& g)
 {
     if (frostAlpha < 0.01f || frostOutline.isEmpty()) return;
 
-    // Re-render what lies under the island at quarter resolution, blur it and draw it back inside the outline.
-    // The source area snaps to multiples of 4 px so the sampling phase stays put while the island glides.
-    constexpr int step = 4;
-    constexpr int radius = 1, passes = 3;   // sigma ~ 1.4 image px ~ 6 px at display scale
+    // Re-render what lies under the island at half resolution, blur it and draw it back inside the outline.
+    // The source area snaps to even pixels so the sampling phase stays put while the island glides.
+    constexpr int step = 2;
+    constexpr int radius = 1, passes = 2;   // sigma ~ 1.2 image px ~ 2.5 px at display scale: soft, still legible
     auto area = frostOutline.getBounds().getSmallestIntegerContainer().expanded (step * (radius * passes + 2));
     area.setX (area.getX() - ((area.getX() % step) + step) % step);
     area.setY (area.getY() - ((area.getY() % step) + step) % step);
@@ -869,23 +869,31 @@ void EqDisplay::paintFrost (juce::Graphics& g)
     if (frostImage.getWidth() != iw || frostImage.getHeight() != ih)
         frostImage = juce::Image (juce::Image::ARGB, iw, ih, false, juce::SoftwareImageType());
 
+    // the 3D / Top views are costly to draw twice: while the island stays put, their blurred copy is refreshed
+    // every third frame only (blurred, the lag doesn't show)
+    const bool front = getView() == View::front;
+    const bool reuse = ! front && area == frostArea && (++frostFrame % 3) != 0;
+    frostArea = area;
+    if (! reuse)
     {
-        juce::Graphics fg (frostImage);
-        fg.fillAll (st::Theme::get().bg1);
-        fg.addTransform (juce::AffineTransform::translation ((float) -area.getX(), (float) -area.getY()).scaled (1.0f / (float) step));
-        if (paintBackdrop) paintBackdrop (fg);
-        // front view: grid, analyser and curves; the 3D / Top views are too costly to draw twice (and barely show
-        // through the glass), so there the backdrop alone is frosted
-        if (getView() == View::front)
         {
-            const auto all = getLocalBounds().toFloat();
-            fg.drawImage (gridLayer, all, juce::RectanglePlacement::stretchToFit);
-            paintSpectrum (fg);
-            fg.drawImage (curveLayer, all, juce::RectanglePlacement::stretchToFit);
+            juce::Graphics fg (frostImage);
+            fg.fillAll (st::Theme::get().bg1);
+            fg.addTransform (juce::AffineTransform::translation ((float) -area.getX(), (float) -area.getY()).scaled (1.0f / (float) step));
+            if (paintBackdrop) paintBackdrop (fg);
+            if (front)
+            {
+                const auto all = getLocalBounds().toFloat();
+                fg.drawImage (gridLayer, all, juce::RectanglePlacement::stretchToFit);
+                paintSpectrum (fg);
+                fg.drawImage (curveLayer, all, juce::RectanglePlacement::stretchToFit);
+            }
+            else if (getView() == View::threeD) paint3D (fg);
+            else paintTop (fg);
             paintDots (fg);
         }
+        boxBlur (frostImage, radius, passes);
     }
-    boxBlur (frostImage, radius, passes);
 
     g.saveState();
     g.reduceClipRegion (frostOutline);

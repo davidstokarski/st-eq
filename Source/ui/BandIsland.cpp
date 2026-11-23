@@ -653,36 +653,20 @@ void BandPanel::updateState()
 void BandPanel::buildOutline()
 {
     // Reference units (see header), measured from the original: a rounded body whose top edge rises smoothly from
-    // near the left corner to a plateau over the gain knob and falls again towards the right corner. Dynamic bands
-    // keep the same outline (their tab is drawn inside it); expanded, the plateau runs over the dynamics section.
-    // All shapes share one point structure so the outline can morph between them.
-    struct Top { juce::Point<float> c1a, c1b, p1, c2a, c2b, p2, p3, p4, p5, c5a, c5b; };
+    // near the left corner to a plateau over the gain knob and falls again towards the right corner. One curve,
+    // tangent-continuous everywhere (horizontal where it meets the corners and the plateau). Dynamic bands keep it
+    // (their tab is drawn inside); expanded, the plateau runs on over the dynamics section.
     const float W = (float) collapsedWidth + shift();
-    const Top plain     { { 90, -3 }, { 140, -21 }, { 192, -24.5f }, { 204, -26 }, { 214, -26.5f }, { 233.5f, -26.5f }, { 262, -26 },
-                          { 282, -23.5f }, { 300, -17.5f }, { 350, -8 }, { 415, -3 } };
-    const Top expandedT { { 90, -3 }, { 140, -21 }, { 192, -24.5f }, { 204, -26 }, { 214, -26.5f }, { 233.5f, -26.5f }, { 410, -26.5f },
-                          { 430, -23.5f }, { 448, -17.5f }, { 498, -8 }, { 563, -3 } };
-
-    auto mix = [] (const Top& a, const Top& b, float t)
-    {
-        auto m = [t] (juce::Point<float> x, juce::Point<float> y) { return x + (y - x) * t; };
-        return Top { m (a.c1a, b.c1a), m (a.c1b, b.c1b), m (a.p1, b.p1), m (a.c2a, b.c2a), m (a.c2b, b.c2b), m (a.p2, b.p2),
-                     m (a.p3, b.p3), m (a.p4, b.p4), m (a.p5, b.p5), m (a.c5a, b.c5a), m (a.c5b, b.c5b) };
-    };
-    const Top top = mix (plain, expandedT, expAmt.current);
-
-    const float H = bodyHeight, r = cornerRadius;
-    auto P = [this] (juce::Point<float> pt) { return toLocal (pt.x, pt.y); };
+    const float H = bodyHeight, r = cornerRadius, peak = -26.5f;
+    const float p0 = 205.0f, p1 = 255.0f + dynShift();   // plateau
     auto Q = [this] (float x, float y) { return toLocal (x, y); };
 
     juce::Path p;
     p.startNewSubPath (Q (0.0f, r));
     p.quadraticTo (Q (0.0f, 0.0f), Q (r, 0.0f));
-    p.cubicTo (P (top.c1a), P (top.c1b), P (top.p1));
-    p.cubicTo (P (top.c2a), P (top.c2b), P (top.p2));
-    p.lineTo (P (top.p3));
-    p.quadraticTo (P (top.p4), P (top.p5));
-    p.cubicTo (P (top.c5a), P (top.c5b), Q (W - r, 0.0f));
+    p.cubicTo (Q (88.0f, 0.0f), Q (138.0f, peak), Q (p0, peak));
+    p.lineTo (Q (p1, peak));
+    p.cubicTo (Q (p1 + 32.0f, peak), Q (350.0f + dynShift(), 0.0f), Q (W - r, 0.0f));
     p.quadraticTo (Q (W, 0.0f), Q (W, r));
     p.lineTo (Q (W, H - r));
     p.quadraticTo (Q (W, H), Q (W - r, H));
@@ -691,16 +675,23 @@ void BandPanel::buildOutline()
     p.closeSubPath();
     outline = p;
 
-    // the dynamics tab: a lifted area on the plateau, from a soft left flank to a chevron on its right
-    const float cx = chevronX();
+    // the dynamics tab: a lifted area on the plateau, from a soft left flank to a smooth bowed edge on its right
+    // (from the top edge down into the gain well, never poking out of the outline)
     juce::Path tab;
     tab.startNewSubPath (Q (100.0f, -40.0f));
-    tab.lineTo (Q (cx - 1.5f, -40.0f));
-    tab.lineTo (Q (cx + 6.5f, -17.0f));
-    tab.lineTo (Q (cx - 20.0f, 17.0f));
+    tab.lineTo (Q (chevronX() - 8.0f, -40.0f));
+    appendTabEdge (tab);
     tab.lineTo (Q (100.0f, 17.0f));
     tab.closeSubPath();
     dynTab = tab;
+}
+
+void BandPanel::appendTabEdge (juce::Path& p) const
+{
+    const float cx = chevronX();
+    p.lineTo (toLocal (cx - 8.0f, -32.0f));
+    p.cubicTo (toLocal (cx + 4.0f, -22.0f), toLocal (cx + 5.0f, -6.0f), toLocal (cx - 13.0f, 9.0f));
+    p.lineTo (toLocal (cx - 20.0f, 17.0f));
 }
 
 void BandPanel::resized()
@@ -780,12 +771,21 @@ void BandPanel::paintBackground (juce::Graphics& g)
     const auto col = bandColour (band);
     const float W = (float) collapsedWidth + shift();
 
-    // soft shadow under the island
-    juce::DropShadow (juce::Colours::black.withAlpha (0.5f), 14, { 0, 4 }).drawForPath (g, outline);
+    // soft shadow around the island, only outside it (inside, the glass shows what's behind)
+    {
+        juce::Path outside;
+        outside.addRectangle (getLocalBounds().toFloat());
+        outside.addPath (outline);
+        outside.setUsingNonZeroWinding (false);
+        g.saveState();
+        g.reduceClipRegion (outside);
+        juce::DropShadow (juce::Colours::black.withAlpha (0.5f), 14, { 0, 4 }).drawForPath (g, outline);
+        g.restoreState();
+    }
 
-    // glass: a dark, cool tint over the display's frosted (blurred) backdrop, a touch lighter towards the top
+    // glass: a light, dark-cool tint over the display's frosted (blurred) backdrop, so what's behind shows through
     const auto top = toLocal (0.0f, -26.0f).y, bottom = toLocal (0.0f, bodyHeight + bulge).y;
-    g.setGradientFill (juce::ColourGradient (ink::glassTop.withAlpha (0.72f), 0.0f, top, ink::glassBottom.withAlpha (0.8f), 0.0f, bottom, false));
+    g.setGradientFill (juce::ColourGradient (ink::glassTop.withAlpha (0.36f), 0.0f, top, ink::glassBottom.withAlpha (0.46f), 0.0f, bottom, false));
     g.fillPath (outline);
 
     g.saveState();
@@ -806,26 +806,18 @@ void BandPanel::paintBackground (juce::Graphics& g)
         g.setFillType (glow);
         g.fillPath (dynTab);
 
-        // chevron edge; collapsed its lower leg ends on the gain well, expanded the section seam takes over
+        // its right edge, a faint light line; expanded, the section seam grows out of it down to the bottom
         const float cx = chevronX(), x = expAmt.current;
-        juce::Path chevron;
-        chevron.startNewSubPath (toLocal (cx - 1.5f, -40.0f));
-        chevron.lineTo (toLocal (cx + 6.5f, -17.0f));
-        g.setColour (juce::Colours::white.withAlpha (0.11f * a));
-        g.strokePath (chevron, juce::PathStrokeType (1.0f));
-        if (x < 0.98f)
-        {
-            juce::Path leg;
-            leg.startNewSubPath (toLocal (cx + 6.5f, -17.0f));
-            leg.lineTo (toLocal (cx - 13.0f, 7.0f));
-            g.setColour (juce::Colours::white.withAlpha (0.11f * a * (1.0f - x)));
-            g.strokePath (leg, juce::PathStrokeType (1.0f));
-        }
+        juce::Path edge;
+        edge.startNewSubPath (toLocal (cx - 8.0f, -32.0f));
+        edge.cubicTo (toLocal (cx + 4.0f, -22.0f), toLocal (cx + 5.0f, -6.0f), toLocal (cx - 13.0f, 9.0f));
+        g.setColour (juce::Colours::white.withAlpha (0.09f * a * (1.0f - 0.5f * x)));
+        g.strokePath (edge, juce::PathStrokeType (1.0f));
         if (x > 0.02f)
         {
             juce::Path seam;
-            seam.startNewSubPath (toLocal (cx + 6.5f, -17.0f));
-            seam.cubicTo (toLocal (cx + 11.0f, 16.0f), toLocal (cx + 11.0f, 66.0f), toLocal (cx + 5.0f, bodyHeight + 6.0f));
+            seam.startNewSubPath (toLocal (cx + 0.75f, -14.0f));   // the edge's outermost point
+            seam.cubicTo (toLocal (cx + 7.0f, 16.0f), toLocal (cx + 7.0f, 66.0f), toLocal (cx + 2.0f, bodyHeight + 6.0f));
             g.setColour (juce::Colours::white.withAlpha (0.07f * a * x));
             g.strokePath (seam, juce::PathStrokeType (1.0f));
         }

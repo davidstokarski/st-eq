@@ -153,7 +153,7 @@ private:
     /** Dynamics section width (moves Q) and, in 3D mode, the depth knob too (moves the right column). */
     float dynShift() const noexcept { return (float) expandedExtra * expAmt.current; }
     float shift() const noexcept { return dynShift() + (float) depthExtra * depthAmt.current; }
-    /** x of the dynamics tab's chevron (its right end). */
+    /** x of the dynamics tab's right end. */
     float chevronX() const noexcept { return 276.0f + dynShift(); }
     float depthX() const noexcept { return 328.7f + dynShift() + 66.0f; }
     float attackX() const noexcept { return 331.0f - 4.0f * specAmt.current; }
@@ -166,6 +166,8 @@ private:
     void timerCallback() override;
     void updateState();
     void buildOutline();
+    /** Appends the dynamics tab's right edge (from just below the top edge, bowing out and into the gain well). */
+    void appendTabEdge (juce::Path&) const;
     void paintBackground (juce::Graphics&);
     void paintLabel (juce::Graphics&, st::Knob&, const juce::String& label, juce::Point<float> centre);
 };

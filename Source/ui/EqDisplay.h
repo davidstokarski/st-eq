@@ -325,6 +325,8 @@ private:
     juce::Path frostOutline;
     float frostAlpha = 0.0f;
     juce::Image frostImage;
+    juce::Rectangle<int> frostArea;
+    int frostFrame = 0;
     void paintDots (juce::Graphics&);
     void paintDynHandles (juce::Graphics&);
     void paintPreview (juce::Graphics&);
