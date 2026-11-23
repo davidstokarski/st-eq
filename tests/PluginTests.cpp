@@ -1220,6 +1220,65 @@ static void testDisplay3D (StEqProcessor& p)
     m.click (d.getViewButton (View::threeD).getCentre());
     check (d.getView() == View::threeD, "view button: 3D");
 
+    // Top view: the waterfall shows there too, painted cheaply
+    {
+        d.setView (View::top);
+        for (int k = 0; k < 40; ++k) d.advanceFrame (1.0 / 30.0);
+        juce::Image im (juce::Image::ARGB, d.getWidth() * 2, d.getHeight() * 2, true);
+        constexpr int frames = 20;
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        for (int i = 0; i < frames; ++i) { juce::Graphics g (im); g.addTransform (juce::AffineTransform::scale (2.0f)); d.paintEntireComponent (g, true); }
+        const double ms = (juce::Time::getMillisecondCounterHiRes() - t0) / frames;
+        std::cout << "   Top view with waterfall: " << juce::String (ms, 2) << " ms\n";
+        check (ms < 12.0, "Top view with the analyser waterfall paints within a frame (" + juce::String (ms, 2) + " ms)");
+        d.setView (View::threeD);
+    }
+
+    // the axis gizmo: drag to orbit the camera (stored per instance), double-click resets; the view stays framed
+    {
+        d.syncFromParameters();
+        const float yaw0 = d.getCameraYaw(), pitch0 = d.getCameraPitch();
+        const auto before = d.project (1000.0f, 0.0f, 0.5f);
+        const auto gz = d.getGizmoCentre();
+        m.drag (gz, gz.translated (60.0f, 40.0f));
+        check (d.getCameraYaw() > yaw0 + 0.2f && d.getCameraPitch() > pitch0 + 0.15f, "gizmo: drag turns and tilts the camera ("
+               + juce::String (d.getCameraYaw(), 2) + ", " + juce::String (d.getCameraPitch(), 2) + ")");
+        check (d.project (1000.0f, 0.0f, 0.5f).getDistanceFrom (before) > 3.0f
+               && std::abs ((double) (p.uiState.getProperty ("camYaw")) - d.getCameraYaw()) < 1.0e-4, "gizmo: the view moves, angles kept in the instance");
+        m.drag (gz, gz.translated (-2000.0f, 2000.0f));
+        check (d.getCameraYaw() >= -0.76f && d.getCameraPitch() <= 1.31f, "gizmo: angles stay in range");
+        // at extreme angles everything is still inside the plot and dragging stays exact
+        for (auto ang : { std::pair<float, float> { -0.75f, 1.3f }, { 0.75f, 0.0f }, { 0.75f, 1.3f }, { -0.75f, 0.0f } })
+        {
+            d.setCameraAngles (ang.first, ang.second);
+            d.syncFromParameters();
+            bool inside = true;
+            for (float hz : { 10.0f, 30000.0f }) for (float db : { -range, range }) for (float w : { 0.0f, 1.0f })
+                inside &= d.getLocalBounds().toFloat().contains (d.project (hz, db, w));
+            const float w = p.getBand (b).depth * 0.01f;
+            m.drag (d.dotPosition (b), d.project (700.0f, -1.0f, w));
+            auto q = p.getBand (b);
+            const bool exact = std::abs (std::log2 (q.freq / 700.0f)) < 0.06f && std::abs (q.gain + 1.0f) < 0.4f;
+            d.syncFromParameters();
+            m.drag (d.depthHandle (b), d.project (700.0f, -range, 0.8f));
+            const bool depthOk = std::abs (p.getBand (b).depth - 80.0f) < 4.0f;
+            check (inside && exact && depthOk, "camera " + juce::String (ang.first, 2) + " / " + juce::String (ang.second, 2)
+                   + ": box in view, dot and floor-handle drags exact (" + juce::String (q.freq, 0) + " Hz " + juce::String (q.gain, 2)
+                   + " dB, depth " + juce::String (p.getBand (b).depth, 1) + ")" + (inside ? "" : " [box outside]") + (exact ? "" : " [dot]") + (depthOk ? "" : " [depth]"));
+            d.syncFromParameters();
+            juce::Image img (juce::Image::ARGB, d.getWidth(), d.getHeight(), true);
+            juce::Graphics g (img);
+            d.paintEntireComponent (g, true);
+        }
+        d.mouseDoubleClick (m.ev (d.getGizmoCentre(), {}, 2));
+        check (std::abs (d.getCameraYaw() - EqDisplay::defaultYaw) < 1.0e-4f && std::abs (d.getCameraPitch() - EqDisplay::defaultPitch) < 1.0e-4f,
+               "gizmo: double-click resets the camera");
+        setParam (p, ids::band (b, "depth"), 25.0f);
+        p.setBandValue (b, "freq", 2000.0f);
+        p.setBandValue (b, "gain", 3.0f);
+        d.syncFromParameters();
+    }
+
     // island depth knob (a fresh island in 3D mode is wider)
     e.getDisplay().setSelection ({ b }, b);
     const int wide = e.getBandPanel() != nullptr ? e.getBandPanel()->getPreferredWidth() : 0;
@@ -1243,6 +1302,39 @@ static void testDisplay3D (StEqProcessor& p)
            "3D mode off: back to the front view");
     ed.reset();
     clearBands (p);
+}
+
+/** 3D mode defaults (on, Front view) and that presets / A/B leave it alone (it's the instance's setting). */
+static void testMode3dDefaults()
+{
+    std::cout << "3D mode defaults and presets\n";
+    StEqProcessor q;
+    q.setPlayConfigDetails (2, 2, 48000.0, 512);
+    q.prepareToPlay (48000.0, 512);
+    check (q.refs.is3D(), "3D mode is on by default");
+    {
+        std::unique_ptr<juce::AudioProcessorEditor> ed (q.createEditor());
+        ed->setSize (StEqEditor::designWidth, StEqEditor::designHeight);
+        auto& d = dynamic_cast<StEqEditor*> (ed.get())->getDisplay();
+        check (d.getView() == EqDisplay::View::front, "a new instance opens in the Front view");
+    }
+    setParam (q, ids::mode3d, 0.0f);
+    q.presets.loadPreset (1);
+    check (! q.refs.is3D(), "loading a preset keeps 3D mode off");
+    setParam (q, ids::mode3d, 1.0f);
+    check (q.refs.is3D() && ! q.presets.isModified(), "switching 3D mode doesn't mark the preset as changed");
+    q.presets.loadPreset (2);
+    check (q.refs.is3D(), "loading a preset keeps 3D mode on");
+    q.ab.select (1);
+    setParam (q, ids::mode3d, 0.0f);
+    q.ab.select (0);
+    check (! q.refs.is3D(), "A/B switching leaves 3D mode alone");
+    // a session saved with 3D off comes back off (the setting is in the session, just not in presets)
+    juce::MemoryBlock mb;
+    q.getStateInformation (mb);
+    StEqProcessor r;
+    r.setStateInformation (mb.getData(), (int) mb.getSize());
+    check (! r.refs.is3D(), "session restore keeps 3D mode off");
 }
 
 static void testInstancesAndOutput (StEqProcessor& p)
@@ -1633,6 +1725,7 @@ static int runTests()
     testCpu (p);
     testInteraction (p);
     testDisplay3D (p);
+    testMode3dDefaults();
     testInstancesAndOutput (p);
     testUiMonkey (p);
    #if JUCE_MAC
@@ -1938,6 +2031,8 @@ struct SnapshotApp : juce::JUCEApplicationBase
         } });
         auto deep = [&p, load, selectBands] (int view)
         {
+            p.uiState.setProperty ("camYaw", (double) EqDisplay::defaultYaw, nullptr);
+            p.uiState.setProperty ("camPitch", (double) EqDisplay::defaultPitch, nullptr);
             load ("Vocal Presence");
             setParam (p, ids::mode3d, 1.0f);
             const float depths[] = { 0.0f, 35.0f, 80.0f, 55.0f, 20.0f, 65.0f };
@@ -1948,6 +2043,12 @@ struct SnapshotApp : juce::JUCEApplicationBase
             selectBands ("2", 2);
         };
         snap->jobs.push_back ({ [deep] { deep (0); }, "16_3d_view" });
+        snap->jobs.push_back ({ [deep] { deep (0); }, "16b_3d_orbited", 1.0f, [] (StEqEditor& e)
+        {
+            e.getDisplay().setCameraAngles (-0.45f, 0.95f);
+            MouseSim m { e.getDisplay(), {} };
+            e.getDisplay().mouseMove (m.ev (e.getDisplay().getGizmoCentre(), {}));
+        } });
         snap->jobs.push_back ({ [deep] { deep (1); }, "17_top_view" });
         snap->jobs.push_back ({ [deep] { deep (2); }, "18_3d_mode_front" });
         snap->jobs.push_back ({ [&p] { setParam (p, ids::mode3d, 0.0f); p.uiState.setProperty ("view3d", 0, nullptr); }, "19_3d_off" });

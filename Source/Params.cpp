@@ -104,7 +104,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
         global->addChild (makeChoice (ids::character, "Character", characterNames, 0));
         global->addChild (makeBool (ids::bypass, "Bypass", false));
         global->addChild (makeChoice (ids::panMode, "Pan Mode", { "Left / Right", "Mid / Side" }, 0));
-        global->addChild (makeBool (ids::mode3d, "3D Mode", false));
+        global->addChild (makeBool (ids::mode3d, "3D Mode", true));
         layout.add (std::move (global));
     }
 

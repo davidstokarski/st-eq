@@ -18,6 +18,9 @@ StEqProcessor::StEqProcessor()
 {
     refs.bind (apvts);
     registerFactoryPresets (presets);
+    // 3D mode is the instance's display / depth setting, not part of the sound: presets and A/B leave it alone
+    presets.keepParameters = { ids::mode3d };
+    ab.keepParameters = { ids::mode3d };
 
     // ST EQ identity: a neutral, slightly violet charcoal display (instead of ST Sat's red haze), a saturated
     // yellow response curve and a light-grey analyser, like a modern Pro-style EQ.

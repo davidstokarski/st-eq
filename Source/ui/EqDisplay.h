@@ -33,11 +33,12 @@ struct AnalyzerSettings
     Alt-click = bypass, rubber-band and Cmd/Shift-click selection, right-click menus, Delete removes,
     Cmd-C / Cmd-V copy and paste, double-click a dot to type a frequency (Tab: gain, Q).
 
-    3D mode (the instance's mode_3d parameter): every band also has a depth. Views (buttons top right, kept in
-    uiState "view3d"; compact strips follow the instance): 3D (perspective: frequency across, gain up, depth
-    into the screen; each band's curve stands at its depth, the total curve runs through the bands' depths,
-    the spectrum on the back wall; drag a dot for frequency / gain, its shadow on the floor for depth), Top
-    (frequency across, depth up: drag a dot for frequency / depth) and Front (the normal display). */
+    3D mode (the instance's mode_3d parameter, on by default): every band also has a depth. Views (buttons top
+    right, kept in uiState "view3d", Front by default; compact strips follow the instance): 3D (a raised, turned
+    perspective camera you orbit with the axis gizmo; each band's curve stands at its depth, the total curve runs
+    through the bands' depths, the analyser is a waterfall of recent spectra on the near floor; drag a dot for
+    frequency / gain, its shadow on the floor for depth), Top (frequency across, depth up, the waterfall as
+    ridgelines: drag a dot for frequency / depth) and Front (the normal display). */
 class EqDisplay : public juce::Component, public juce::SettableTooltipClient
 {
 public:
@@ -68,6 +69,13 @@ public:
     juce::Point<float> depthHandle (int band) const;
     /** View buttons (3D, Top, Front), shown while 3D mode is on (not in compact rows). */
     juce::Rectangle<float> getViewButton (View) const;
+    /** 3D view: the axis gizmo under the view buttons; drag it to turn / tilt the camera, double-click resets. */
+    juce::Point<float> getGizmoCentre() const noexcept;
+    /** 3D camera angles (radians; per instance, uiState "camYaw" / "camPitch"). */
+    float getCameraYaw() const;
+    float getCameraPitch() const;
+    void setCameraAngles (float yaw, float pitch);
+    static constexpr float defaultYaw = 0.15f, defaultPitch = 0.40f;
 
     // settings
     /** EQ scale. Auto (default): fits the bands and the curve with some headroom, between 3 and 30 dB; grows
@@ -193,7 +201,7 @@ private:
     juce::Point<float> mousePos { -100.0f, -100.0f };
     bool mouseInside = false;
 
-    enum class Drag { none, bands, dynRange, rubber, sketch, pendingCurve, pendingGrab, triggerLo, triggerHi, value, solo, depth };
+    enum class Drag { none, bands, dynRange, rubber, sketch, pendingCurve, pendingGrab, triggerLo, triggerHi, value, solo, depth, orbit };
 
     // --- parameter display (next to the hovered dot): live values you can drag / wheel / double-click, and quick
     //     buttons (shape, bypass, solo: click and hold, drag to move the band while listening, delete) ---------
@@ -249,9 +257,20 @@ private:
     bool mode3d = false;
     int hoverDepthBand = -1;
     juce::Point<float> depthGrabOffset;
+    bool hoverGizmo = false;
+    float orbitYaw0 = 0.0f, orbitPitch0 = 0.0f;
+    bool gizmoAt (juce::Point<float>) const noexcept;
     bool flatView() const { return getView() == View::front; }
     // 3D camera: a raised, turned perspective view of the box (frequency x gain x depth), fitted to the plot
-    struct Camera { juce::Rectangle<float> key; bool valid = false; float kx = 1, ky = 1, ox = 0, oy = 0; };
+    struct Camera
+    {
+        juce::Rectangle<float> key; float keyYaw = 0, keyPitch = 0; bool valid = false;
+        float cy = 1, sy = 0, cp = 1, sp = 0;     // yaw / pitch
+        float kx = 1, ky = 1, ox = 0, oy = 0;     // fit to the plot
+        juce::Point<float> raw (float X, float Y, float Z) const noexcept;
+        /** Inverse of raw on the plane at Z: the X, Y under a raw screen point (false if the plane is edge-on). */
+        bool unproject (juce::Point<float> r, float Z, float& X, float& Y) const noexcept;
+    };
     mutable Camera camera;
     const Camera& getCamera() const noexcept;
     juce::Point<float> projectUnit (float u, float v, float depth) const noexcept;   // u: 0..1 frequency, v: -1..1 gain
@@ -262,7 +281,7 @@ private:
     /** 3D: how big things look at a depth relative to the front (perspective). */
     float depthScale (float depth) const noexcept;
     // 3D analyser: a waterfall of recent spectra receding from the front over the floor
-    static constexpr int kWaterfall = 14;
+    static constexpr int kWaterfall = 32, kWaterfall3D = 14;   // history kept; slices the 3D view shows (Top shows all)
     std::array<std::vector<float>, kWaterfall> waterfall;
     std::vector<float> waterfallHz, preHz;
     int waterfallHead = 0, waterfallCount = 0;

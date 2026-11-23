@@ -392,6 +392,9 @@ int EqDisplay::bandAt (juce::Point<float> pt) const
         const float d = dp.getDistanceFrom (pt);
         if (d < bestD) { bestD = d; best = b; }
     }
+    // 3D view seen from high up: a dot can sit close to its floor handle; the nearer one wins
+    if (best >= 0)
+        if (const int h = depthHandleAt (pt); h >= 0 && depthHandle (h).getDistanceFrom (pt) < bestD) return -1;
     return best;
 }
 
@@ -659,7 +662,7 @@ void EqDisplay::frame (double dt)
         if (analyzer.post)      changed |= postSpectrum->update (dt);
         if (analyzer.pre)       changed |= preSpectrum->update (dt);
         if (analyzer.sidechain) changed |= scSpectrum->update (dt);
-        if (getView() == View::threeD) changed |= pushWaterfall (dt);
+        if (getView() != View::front) changed |= pushWaterfall (dt);
     }
     if (analyzer.freeze && analyzer.post)
     {
@@ -1662,6 +1665,11 @@ void EqDisplay::mouseMove (const juce::MouseEvent& e)
     const int hd = hb < 0 ? dynHandleAt (e.position) : -1;
     const int hdd = hb < 0 ? depthHandleAt (e.position) : -1;
     if (hdd != hoverDepthBand) { hoverDepthBand = hdd; setMouseCursor (hdd >= 0 ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor); }
+    if (const bool hg = hb < 0 && gizmoAt (e.position); hg != hoverGizmo)
+    {
+        hoverGizmo = hg;
+        setMouseCursor (hg ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::NormalCursor);
+    }
 
     // spectrum grab: freeze the analyser while hovering near its peaks
     int hp = -1;
@@ -1704,6 +1712,7 @@ void EqDisplay::mouseExit (const juce::MouseEvent&)
     mouseInside = false;
     if (drag == Drag::none) { readoutBand = -1; hoverPart = Part::none; }
     hoverBand = hoverDynBand = hoverPeak = hoverDepthBand = -1;
+    hoverGizmo = false;
     if (grabFrozen) { grabFrozen = false; peaks.clear(); }
     curveLayer = {};
     repaint();
@@ -1718,6 +1727,14 @@ void EqDisplay::mouseDown (const juce::MouseEvent& e)
     if (const int vb = viewButtonAt (e.position); vb >= 0)
     {
         if (! e.mods.isPopupMenu()) setView ((View) vb);
+        return;
+    }
+    if (gizmoAt (e.position) && ! e.mods.isPopupMenu())
+    {
+        // 3D view: drag the axis gizmo to turn (across) and tilt (up / down) the camera
+        drag = Drag::orbit;
+        orbitYaw0 = getCameraYaw();
+        orbitPitch0 = getCameraPitch();
         return;
     }
 
@@ -1962,6 +1979,14 @@ void EqDisplay::mouseDrag (const juce::MouseEvent& e)
             applyBandDrag (e);
             break;
 
+        case Drag::orbit:
+        {
+            const float fine = e.mods.isShiftDown() ? 0.2f : 1.0f;
+            setCameraAngles (orbitYaw0 + (e.position.x - dragStart.x) * 0.006f * fine,
+                             orbitPitch0 + (e.position.y - dragStart.y) * 0.006f * fine);
+            break;
+        }
+
         case Drag::depth:
             setPlain (dragStarts.front().band, "depth",
                       100.0f * depthAlongFloor (bands[(size_t) dragStarts.front().band].freq, e.position + depthGrabOffset));
@@ -2033,6 +2058,7 @@ void EqDisplay::mouseUp (const juce::MouseEvent&)
 void EqDisplay::mouseDoubleClick (const juce::MouseEvent& e)
 {
     if (sketchMode) return;
+    if (gizmoAt (e.position)) { setCameraAngles (defaultYaw, defaultPitch); return; }
     if (const auto part = partAt (e.position); part == Part::freq || part == Part::gain || part == Part::q)
     {
         showEntry (readoutBand, part == Part::freq ? 0 : (part == Part::gain ? 1 : 2));
@@ -2044,7 +2070,8 @@ void EqDisplay::mouseDoubleClick (const juce::MouseEvent& e)
         showEntry (b, 0);
         return;
     }
-    if (! plot.contains (e.position) || dynHandleAt (e.position) >= 0 || depthHandleAt (e.position) >= 0 || viewButtonAt (e.position) >= 0) return;
+    if (! plot.contains (e.position) || dynHandleAt (e.position) >= 0 || depthHandleAt (e.position) >= 0 || viewButtonAt (e.position) >= 0
+        || gizmoAt (e.position)) return;
     if (! flatView())
     {
         // 3D: a band at the front plane where clicked; Top: at the clicked frequency and depth, 0 dB

@@ -16,7 +16,7 @@ namespace
 EqDisplay::View EqDisplay::getView() const
 {
     if (! proc.refs.is3D()) return View::front;
-    return (View) juce::jlimit (0, 2, (int) proc.uiState.getProperty ("view3d", 0));
+    return (View) juce::jlimit (0, 2, (int) proc.uiState.getProperty ("view3d", (int) View::front));
 }
 
 void EqDisplay::setView (View v)
@@ -35,21 +35,58 @@ void EqDisplay::setView (View v)
 namespace
 {
     constexpr float kBoxHalfH = 0.42f, kBoxDepth = 1.05f, kDist = 2.5f;
-    const float kYawC = std::cos (0.15f), kYawS = std::sin (0.15f), kPitchC = std::cos (0.40f), kPitchS = std::sin (0.40f);
+    constexpr float kMinYaw = -0.75f, kMaxYaw = 0.75f, kMinPitch = 0.0f, kMaxPitch = 1.3f;
+}
 
-    juce::Point<float> rawProject (float X, float Y, float Z) noexcept
-    {
-        const float pz = Z - kBoxDepth * 0.5f;
-        const float x1 = X * kYawC - pz * kYawS, z1 = X * kYawS + pz * kYawC;
-        const float y2 = Y * kPitchC + z1 * kPitchS, z2 = -Y * kPitchS + z1 * kPitchC;
-        const float s = kDist / (kDist + z2);
-        return { x1 * s, y2 * s };
-    }
+juce::Point<float> EqDisplay::Camera::raw (float X, float Y, float Z) const noexcept
+{
+    const float pz = Z - kBoxDepth * 0.5f;
+    const float x1 = X * cy - pz * sy, z1 = X * sy + pz * cy;
+    const float y2 = Y * cp + z1 * sp, z2 = -Y * sp + z1 * cp;
+    const float s = kDist / (kDist + z2);
+    return { x1 * s, y2 * s };
+}
+
+bool EqDisplay::Camera::unproject (juce::Point<float> r, float Z, float& X, float& Y) const noexcept
+{
+    // raw = (x1, y2) * D / (D + z2) is linear in X, Y once multiplied out: a 2x2 system
+    const float c = Z - kBoxDepth * 0.5f, a = r.x / kDist, b = r.y / kDist;
+    const float m11 = cy - a * sy * cp, m12 = a * sp,      k1 = a * kDist + a * c * cy * cp + c * sy;
+    const float m21 = sy * sp - b * sy * cp, m22 = cp + b * sp, k2 = b * kDist + b * c * cy * cp - c * cy * sp;
+    const float det = m11 * m22 - m12 * m21;
+    if (std::abs (det) < 1.0e-7f) return false;
+    X = (k1 * m22 - m12 * k2) / det;
+    Y = (m11 * k2 - m21 * k1) / det;
+    return true;
+}
+
+float EqDisplay::getCameraYaw() const   { return juce::jlimit (kMinYaw, kMaxYaw, (float) (double) proc.uiState.getProperty ("camYaw", defaultYaw)); }
+float EqDisplay::getCameraPitch() const { return juce::jlimit (kMinPitch, kMaxPitch, (float) (double) proc.uiState.getProperty ("camPitch", defaultPitch)); }
+
+void EqDisplay::setCameraAngles (float yaw, float pitch)
+{
+    proc.uiState.setProperty ("camYaw", juce::jlimit (kMinYaw, kMaxYaw, yaw), nullptr);
+    proc.uiState.setProperty ("camPitch", juce::jlimit (kMinPitch, kMaxPitch, pitch), nullptr);
+    repaint();
+}
+
+juce::Point<float> EqDisplay::getGizmoCentre() const noexcept
+{
+    const auto vb = getViewButton (View::front);
+    return { vb.getRight() - 24.0f, vb.getBottom() + 36.0f };
+}
+
+bool EqDisplay::gizmoAt (juce::Point<float> pt) const noexcept
+{
+    return ! compact && getView() == View::threeD && getGizmoCentre().getDistanceFrom (pt) < 26.0f;
 }
 
 const EqDisplay::Camera& EqDisplay::getCamera() const noexcept
 {
-    if (camera.valid && camera.key == plot) return camera;
+    const float yaw = getCameraYaw(), pitch = getCameraPitch();
+    if (camera.valid && camera.key == plot && juce::exactlyEqual (camera.keyYaw, yaw) && juce::exactlyEqual (camera.keyPitch, pitch)) return camera;
+    camera.cy = std::cos (yaw); camera.sy = std::sin (yaw);
+    camera.cp = std::cos (pitch); camera.sp = std::sin (pitch);
     const float H = plot.getHeight() - 18.0f, W = plot.getWidth();
     const auto target = compact ? juce::Rectangle<float> (plot.getX() + W * 0.04f, plot.getY() + H * 0.10f, W * 0.92f, H * 0.84f)
                                 : juce::Rectangle<float> (plot.getX() + W * 0.07f, plot.getY() + H * 0.15f, W * 0.85f, H * 0.62f);
@@ -58,7 +95,7 @@ const EqDisplay::Camera& EqDisplay::getCamera() const noexcept
         for (float Y : { -kBoxHalfH, kBoxHalfH * 1.2f })
             for (float Z : { 0.0f, kBoxDepth })
             {
-                const auto p = rawProject (X, Y, Z);
+                const auto p = camera.raw (X, Y, Z);
                 x0 = juce::jmin (x0, p.x); x1 = juce::jmax (x1, p.x); y0 = juce::jmin (y0, p.y); y1 = juce::jmax (y1, p.y);
             }
     camera.kx = target.getWidth() / juce::jmax (1.0e-6f, x1 - x0);
@@ -66,6 +103,8 @@ const EqDisplay::Camera& EqDisplay::getCamera() const noexcept
     camera.ox = target.getX() - x0 * camera.kx;
     camera.oy = target.getBottom() + y0 * camera.ky;
     camera.key = plot;
+    camera.keyYaw = yaw;
+    camera.keyPitch = pitch;
     camera.valid = true;
     return camera;
 }
@@ -73,7 +112,7 @@ const EqDisplay::Camera& EqDisplay::getCamera() const noexcept
 juce::Point<float> EqDisplay::projectUnit (float u, float v, float depth) const noexcept
 {
     const auto& c = getCamera();
-    const auto p = rawProject (u * 2.0f - 1.0f, v * kBoxHalfH, juce::jlimit (0.0f, 1.0f, depth) * kBoxDepth);
+    const auto p = c.raw (u * 2.0f - 1.0f, v * kBoxHalfH, juce::jlimit (0.0f, 1.0f, depth) * kBoxDepth);
     return { c.ox + p.x * c.kx, c.oy - p.y * c.ky };
 }
 
@@ -84,21 +123,10 @@ juce::Point<float> EqDisplay::project (float hz, float db, float depth) const no
 
 bool EqDisplay::planePoint (juce::Point<float> pt, float depth, float& hz, float& db) const noexcept
 {
-    // the plane at a depth is a projective image of (u, v): Newton converges in a few steps
-    float u = 0.5f, v = 0.0f;
-    for (int it = 0; it < 16; ++it)
-    {
-        const auto p = projectUnit (u, v, depth);
-        const float ex = p.x - pt.x, ey = p.y - pt.y;
-        if (std::abs (ex) + std::abs (ey) < 0.002f) break;
-        constexpr float e = 1.0e-3f;
-        const auto pu = projectUnit (u + e, v, depth), pv = projectUnit (u, v + e, depth);
-        const float a = (pu.x - p.x) / e, b = (pv.x - p.x) / e, c = (pu.y - p.y) / e, d = (pv.y - p.y) / e;
-        const float det = a * d - b * c;
-        if (std::abs (det) < 1.0e-6f) return false;
-        u = juce::jlimit (-1.0f, 2.0f, u - (d * ex - b * ey) / det);
-        v = juce::jlimit (-20.0f, 20.0f, v - (-c * ex + a * ey) / det);
-    }
+    const auto& c = getCamera();
+    float X = 0.0f, Y = 0.0f;
+    if (! c.unproject ({ (pt.x - c.ox) / c.kx, (c.oy - pt.y) / c.ky }, juce::jlimit (0.0f, 1.0f, depth) * kBoxDepth, X, Y)) return false;
+    const float u = juce::jlimit (-1.0f, 2.0f, (X + 1.0f) * 0.5f), v = juce::jlimit (-20.0f, 20.0f, Y / kBoxHalfH);
     hz = minHz * std::pow (maxHz / minHz, u);
     db = v * displayRange;
     return true;
@@ -375,11 +403,11 @@ void EqDisplay::paint3D (juce::Graphics& g)
 
     struct Layer { float depth; int kind; int index; };   // kind 0: waterfall slice (index = age), 1: band
     std::vector<Layer> layers;
-    layers.reserve ((size_t) (kMaxBands + kWaterfall + 1));
+    layers.reserve ((size_t) (kMaxBands + kWaterfall3D + 1));
     const bool showWaterfall = (analyzer.pre || analyzer.post) && waterfallCount > 0;
     if (showWaterfall)
-        for (int age = 0; age < waterfallCount; ++age)
-            layers.push_back ({ kWaterfallSpan * (float) age / (float) (kWaterfall - 1), 0, age });
+        for (int age = 0; age < juce::jmin (waterfallCount, kWaterfall3D); ++age)
+            layers.push_back ({ kWaterfallSpan * (float) age / (float) (kWaterfall3D - 1), 0, age });
     for (int b = 0; b < kMaxBands; ++b)
         if (bands[(size_t) b].used && curves[(size_t) b].valid) layers.push_back ({ bands[(size_t) b].depth * 0.01f, 1, b });
     std::stable_sort (layers.begin(), layers.end(), [] (const Layer& a, const Layer& b)
@@ -394,7 +422,7 @@ void EqDisplay::paint3D (juce::Graphics& g)
         {
             const auto& lv = waterfall[(size_t) ((waterfallHead - L.index + kWaterfall) % kWaterfall)];
             if (lv.empty()) continue;
-            const float age = (float) L.index / (float) (kWaterfall - 1), fade = std::pow (1.0f - age, 1.4f);
+            const float age = (float) L.index / (float) (kWaterfall3D - 1), fade = std::pow (1.0f - age, 1.4f);
             const bool newest = L.index == 0;
             const int pts = newest ? 240 : 80;
             // the newest slice is a lit surface; every few older ones hide a little of what's behind (a terrain)
@@ -531,9 +559,16 @@ void EqDisplay::paint3D (juce::Graphics& g)
         g.drawText ("near", juce::Rectangle<float> (nearPt.x + 6.0f, nearPt.y - 7.0f, 40.0f, 14.0f), juce::Justification::centredLeft, false);
         g.drawText ("far", juce::Rectangle<float> (farPt.x + 6.0f, farPt.y - 7.0f, 40.0f, 14.0f), juce::Justification::centredLeft, false);
 
-        // axis gizmo under the view buttons: X (frequency), Y (gain), Z (depth, towards you)
-        const auto vb = getViewButton (View::front);
-        const juce::Point<float> o (vb.getRight() - 24.0f, vb.getBottom() + 34.0f);
+        // axis gizmo under the view buttons: X (frequency), Y (gain), Z (depth, towards you); drag it to orbit
+        const auto o = getGizmoCentre();
+        const bool active = hoverGizmo || drag == Drag::orbit;
+        g.setColour (juce::Colours::white.withAlpha (active ? 0.07f : 0.025f));
+        g.fillEllipse (juce::Rectangle<float> (48.0f, 48.0f).withCentre (o));
+        if (active)
+        {
+            g.setColour (t.curve.withAlpha (0.35f));
+            g.drawEllipse (juce::Rectangle<float> (48.0f, 48.0f).withCentre (o), 1.0f);
+        }
         auto dir = [] (juce::Point<float> a, juce::Point<float> b) { const auto d = b - a; return d / juce::jmax (0.001f, d.getDistanceFromOrigin()); };
         const auto c0 = projectUnit (0.5f, 0.0f, 0.5f);
         const juce::Point<float> ax[3] = { dir (c0, projectUnit (0.6f, 0.0f, 0.5f)), dir (c0, projectUnit (0.5f, 0.25f, 0.5f)),
@@ -543,9 +578,9 @@ void EqDisplay::paint3D (juce::Graphics& g)
         for (int i = 0; i < 3; ++i)
         {
             const auto e = o + ax[i] * 14.0f;
-            g.setColour (juce::Colours::white.withAlpha (0.28f));
-            line (o, e);
-            g.setColour (t.textFaint);
+            g.setColour (juce::Colours::white.withAlpha (active ? 0.6f : 0.3f));
+            line (o, e, active ? 1.3f : 1.0f);
+            g.setColour (active ? t.textDim : t.textFaint);
             g.drawText (names[i], juce::Rectangle<float> (10.0f, 10.0f).withCentre (o + ax[i] * 21.0f), juce::Justification::centred, false);
         }
     }
@@ -578,6 +613,48 @@ void EqDisplay::paintTop (juce::Graphics& g)
         const float y = std::round (topY (w)) + 0.5f;
         g.setColour (juce::Colours::white.withAlpha (w == 0.0f || w == 1.0f ? 0.10f : 0.045f));
         g.fillRect (area.getX(), y - 0.5f, area.getWidth(), 1.0f);
+    }
+
+    // the analyser as a waterfall seen from above: recent spectra as ridgelines, the newest at the front (bottom),
+    // older ones further back and fainter; each ridge hides a little of the ones behind it
+    if ((analyzer.pre || analyzer.post) && waterfallCount > 0 && ! waterfallHz.empty())
+    {
+        const juce::Colour ice (0xffa9dcee);
+        const float aRange = AnalyzerSettings::ranges[analyzer.rangeIndex];
+        const float topHz = juce::jmin (maxHz, (float) (sampleRate * 0.5) * 0.985f);
+        const int n = (int) waterfallHz.size();
+        int i0 = 0, i1 = n - 1;
+        while (i0 < n && waterfallHz[(size_t) i0] < 20.0f) ++i0;
+        while (i1 > i0 && waterfallHz[(size_t) i1] > topHz) --i1;
+        const float rowGap = area.getHeight() / (float) (kWaterfall - 1);
+        const float amp = juce::jmin (rowGap * 4.0f, area.getHeight() * 0.4f);
+        for (int age = juce::jmin (waterfallCount, kWaterfall) - 1; age >= 0 && i1 - i0 > 2; --age)
+        {
+            const auto& lv = waterfall[(size_t) ((waterfallHead - age + kWaterfall) % kWaterfall)];
+            if ((int) lv.size() != n) continue;
+            const bool newest = age == 0;
+            const float base = area.getBottom() - rowGap * (float) age;
+            const float fade = std::pow (1.0f - (float) age / (float) kWaterfall, 1.3f);
+            const int stride = juce::jmax (1, (i1 - i0) / (newest ? 260 : 130));
+            juce::Path ridge, body;
+            float lastX = 0.0f;
+            for (int i = i0; i <= i1; i += stride)
+            {
+                float m = -200.0f;
+                for (int j = i; j < juce::jmin (i1 + 1, i + stride); ++j) m = juce::jmax (m, lv[(size_t) j]);
+                const float x = xForHz (waterfallHz[(size_t) i]);
+                const float y = base - amp * juce::jlimit (0.0f, 1.0f, 1.0f + m / aRange);
+                if (i == i0) { ridge.startNewSubPath (x, y); body.startNewSubPath (x, base); body.lineTo (x, y); }
+                else         { ridge.lineTo (x, y); body.lineTo (x, y); }
+                lastX = x;
+            }
+            body.lineTo (lastX, base);
+            body.closeSubPath();
+            g.setColour (newest ? ice.withAlpha (0.10f) : t.bg0.withAlpha (0.5f * fade));
+            g.fillPath (body);
+            g.setColour (ice.withAlpha (newest ? 0.9f : 0.05f + 0.4f * fade * fade));
+            g.strokePath (ridge, juce::PathStrokeType (newest ? 1.3f : 0.8f));
+        }
     }
 
     // each band: a strip at its depth, as thick and bright as the band acts at each frequency
