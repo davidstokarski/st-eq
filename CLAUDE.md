@@ -49,8 +49,9 @@ Plugin-specific notes:
   constructor) instead of ST Sat's red display.
 - Verify: `StEqPluginTests` (responses per mode vs analog, latency, dynamics, stress, state, CPU, UI paint cost),
   `StEqPluginTests --snapshot <dir>` (look at the PNGs), `auval -v aufx Steq StAu`.
-- Website videos: `StEqPluginTests --video <dir> [scene ...]` (`tests/VideoRender.cpp`) renders the use-case clips
-  (needs ffmpeg): a synthesized mix plays through the processor in real time while a scripted pointer drives the
-  editor's own mouse handlers (with a drawn cursor). Scenes: vocal-cleanup, dynamic-deess, drum-bus, 3d-depth.
+- Website videos: `StEqPluginTests --video <dir> [scene ...]` (`tests/VideoRender.cpp`, on the shell's
+  `st_shell/testing/st_video.h`) renders the use-case clips (needs ffmpeg): a synthesized mix plays through the
+  processor in real time while a scripted pointer drives the editor's own mouse handlers (with a drawn cursor).
+  Scenes: vocal-cleanup, dynamic-deess, drum-bus, 3d-depth.
   The website repo's README says how they are cut into its demo montage.
 - Release: `scripts/release.sh`.
