@@ -127,7 +127,8 @@ void EqDisplay::curveDepths (std::array<float, kPoints>& out) const
             const auto& p = bands[(size_t) b];
             const auto& c = curves[(size_t) b];
             if (! p.isActive() || ! c.valid) continue;
-            const float w = std::abs (c.db[(size_t) i]);
+            // weight: what the band visibly does (a cut's -200 dB past Nyquist mustn't drag the curve to its plane)
+            const float w = juce::jmin (std::abs (c.db[(size_t) i]), displayRange * 1.2f);
             num += w * p.depth * 0.01f;
             den += w;
         }

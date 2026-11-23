@@ -489,12 +489,12 @@ void EqDisplay::computeBandCurve (int b, Curve& c)
     {
         if (procMode == (int) ProcMode::zeroLatency)
         {
-            // The digital response (what you hear). Cuts fall away at Nyquist, where the digital filter ends.
-            // Other shapes blend over the top of the band into the analog shape (shifted to meet it), so the curve
-            // carries on past Nyquist without a kink (a digital curve always flattens out at Nyquist).
+            // The digital response (what you hear). A high cut falls away at Nyquist, where the digital filter ends.
+            // Other shapes (low cuts too: they pass everything up there) blend over the top of the band into the
+            // analog shape (shifted to meet it), so the curve carries on past Nyquist without a kink.
             const auto a = st::dsp::eq::designAnalog (spec);
             const auto d = st::dsp::eq::designDigital (a, sampleRate);
-            const bool cut = spec.shape == Shape::lowCut || spec.shape == Shape::highCut;
+            const bool cut = spec.shape == Shape::highCut;
             const double fA = 0.42 * sampleRate, fB = 0.4995 * sampleRate;
             auto digitalDb = [&] (double f) { return 20.0 * std::log10 (std::max (1.0e-9, std::abs (d.response (f, sampleRate)))); };
             const double offset = digitalDb (fA) - a.magnitudeDb (fA);

@@ -1028,6 +1028,13 @@ static void testInteraction (StEqProcessor& p)
         check (std::abs (settle() - 3.0f) < 0.05f, "auto range shrinks back to 3 dB");
         const int cut = p.addBand (Shape::lowCut, 80.0f, 0.0f, 0.71f, 6);
         check (std::abs (settle() - 3.0f) < 0.05f, "auto range ignores a cut filter's slope");
+        {
+            // a low cut passes the top: no phantom high cut at Nyquist (curve flat up to the display's end)
+            float worstTop = 0.0f;
+            for (float hz : { 15000.0f, 21000.0f, 22500.0f, 25000.0f, 29000.0f })
+                worstTop = juce::jmax (worstTop, std::abs (d.dbForY (d.getCurveY (hz))));
+            check (worstTop < 0.3f, "low cut: curve stays flat past Nyquist (off by " + juce::String (worstTop, 2) + " dB)");
+        }
         p.removeBand (cut);
 
         // drag the node up past the top of the scale: the scale grows during the drag (never shrinks mid-drag)
