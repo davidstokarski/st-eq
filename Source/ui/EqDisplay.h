@@ -83,6 +83,8 @@ public:
     float autoRangeTarget() const;
     /** Advances the range animation (normally every frame; tests call it directly). Returns true if it moved. */
     bool advanceRange (double seconds);
+    /** Runs one UI frame (parameters, analyser, animations): the frame clock calls it; tests too. */
+    void advanceFrame (double dt) { frame (dt); }
     void setAnalyzer (const AnalyzerSettings&);
     const AnalyzerSettings& getAnalyzer() const noexcept { return analyzer; }
     void setSketchMode (bool);
@@ -149,6 +151,7 @@ private:
     bool autoRange = true, rangeReady = false;
     float displayRange = 12.0f, rangeTarget = 12.0f;
     float dragDbAccum = 0.0f, lastDragY = 0.0f;   // band drags accumulate dB step by step (stable while the scale moves)
+    juce::Point<float> lastDragPos;               // 3D view: the previous drag point (dB steps on the band's plane)
     void rangeChanged();
     static constexpr float minHz = 10.0f, maxHz = 30000.0f;
 
@@ -245,10 +248,26 @@ private:
     // --- 3D mode ---------------------------------------------------------------------------------------
     bool mode3d = false;
     int hoverDepthBand = -1;
-    float depthGrabOffset = 0.0f;
+    juce::Point<float> depthGrabOffset;
     bool flatView() const { return getView() == View::front; }
-    juce::Rectangle<float> planeAt (float depth) const noexcept;   // 3D: the (frequency x gain) plane at a depth
-    float depthForFloorY (float y) const noexcept;
+    // 3D camera: a raised, turned perspective view of the box (frequency x gain x depth), fitted to the plot
+    struct Camera { juce::Rectangle<float> key; bool valid = false; float kx = 1, ky = 1, ox = 0, oy = 0; };
+    mutable Camera camera;
+    const Camera& getCamera() const noexcept;
+    juce::Point<float> projectUnit (float u, float v, float depth) const noexcept;   // u: 0..1 frequency, v: -1..1 gain
+    /** 3D: the (frequency, dB) on the vertical plane at a depth under a screen point. */
+    bool planePoint (juce::Point<float>, float depth, float& hz, float& db) const noexcept;
+    /** 3D: the depth whose floor point along a frequency's floor line is nearest a screen point. */
+    float depthAlongFloor (float hz, juce::Point<float>) const noexcept;
+    /** 3D: how big things look at a depth relative to the front (perspective). */
+    float depthScale (float depth) const noexcept;
+    // 3D analyser: a waterfall of recent spectra receding from the front over the floor
+    static constexpr int kWaterfall = 14;
+    std::array<std::vector<float>, kWaterfall> waterfall;
+    std::vector<float> waterfallHz, preHz;
+    int waterfallHead = 0, waterfallCount = 0;
+    double waterfallClock = 0.0;
+    bool pushWaterfall (double dt);
     juce::Rectangle<float> topArea() const noexcept;
     float topY (float depth) const noexcept;
     float topDepth (float y) const noexcept;

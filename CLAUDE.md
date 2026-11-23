@@ -25,7 +25,10 @@ Plugin-specific notes:
   directness and gains width (decorrelated side) and small early reflections; a cut's mid part fades, so at 100 %
   only the sides are cut. Zero latency everywhere: in Linear Phase depth bands run as IIR bands (the FIR leaves them
   out). Display: `Source/ui/Display3D.cpp` (3D / Top views, uiState `view3d`; Front is the normal display; compact
-  strips follow the instance). Island: Depth knob (the island widens in 3D mode).
+  strips follow the instance). The 3D view is a raised, slightly turned perspective camera (`getCamera`,
+  `planePoint` / `depthAlongFloor` invert it for dragging) with the analyser as a waterfall of recent spectra on the
+  near floor (`pushWaterfall`); keep its paint cost in check (test: "3D view with the analyser waterfall").
+  Island: Depth knob (the island widens in 3D mode).
 - Instances: `Source/ui/Instances.*` — `InstanceHub` (other ST EQs via `st::InstanceRegistry`, their spectra through
   the analyser history tap, collisions) and `EqStrip` (ST EQ's module in the shell's `st::MultiView`: a compact,
   fully editable `EqDisplay (proc, true)` + bypass switch). The multiview (all ST plug-ins, by track) is the shell's;

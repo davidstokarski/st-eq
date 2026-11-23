@@ -659,6 +659,7 @@ void EqDisplay::frame (double dt)
         if (analyzer.post)      changed |= postSpectrum->update (dt);
         if (analyzer.pre)       changed |= preSpectrum->update (dt);
         if (analyzer.sidechain) changed |= scSpectrum->update (dt);
+        if (getView() == View::threeD) changed |= pushWaterfall (dt);
     }
     if (analyzer.freeze && analyzer.post)
     {
@@ -1525,6 +1526,7 @@ void EqDisplay::beginBandDrag (const juce::MouseEvent& e)
     dragStart = e.position;
     dragDbAccum = 0.0f;
     lastDragY = e.position.y;
+    lastDragPos = e.position;
     axisLocked = false;
     dragStarts.clear();
     proc.undoManager.beginNewTransaction ("Move bands");
@@ -1552,12 +1554,26 @@ void EqDisplay::applyBandDrag (const juce::MouseEvent& e)
     }
     else axisLocked = false;
 
-    // 3D view: the plane at the (first) dragged band's depth sets the scale
     const auto view = getView();
-    auto span = juce::Rectangle<float> (plot.getX(), eqArea.getY(), plot.getWidth(), eqArea.getHeight());
-    if (view == View::threeD && ! dragStarts.empty()) span = planeAt (dragStarts.front().params.depth * 0.01f);
+    const juce::Rectangle<float> span (plot.getX(), eqArea.getY(), plot.getWidth(), eqArea.getHeight());
     const float octPerPx = std::log2 (maxHz / minHz) / juce::jmax (1.0f, span.getWidth());
-    const float ratio = std::exp2 (dx * octPerPx);
+    float ratio = std::exp2 (dx * octPerPx);
+
+    // 3D view: frequency and gain under the mouse on the (first) dragged band's plane
+    bool onPlane = false;
+    float planeStepDb = 0.0f;
+    if (view == View::threeD && ! dragStarts.empty())
+    {
+        const float w = dragStarts.front().params.depth * 0.01f;
+        float h0, d0, h1, d1, hp, dp;
+        if (planePoint (dragStart, w, h0, d0) && planePoint (e.position, w, h1, d1) && planePoint (lastDragPos, w, hp, dp))
+        {
+            onPlane = true;
+            ratio = axisLocked && ! lockHorizontal ? 1.0f : std::exp2 (fine * std::log2 (juce::jmax (1.0f, h1) / juce::jmax (1.0f, h0)));
+            planeStepDb = axisLocked && lockHorizontal ? 0.0f : fine * (d1 - dp);
+        }
+        lastDragPos = e.position;
+    }
 
     if (view == View::top)
     {
@@ -1575,9 +1591,13 @@ void EqDisplay::applyBandDrag (const juce::MouseEvent& e)
     // vertical: accumulate dB from each mouse step at the scale shown at that moment, so a scale that grows
     // while you drag past the edge never feeds back into the gain
     const float pxPerDb = span.getHeight() * 0.5f / displayRange;
-    dragDbAccum -= (e.position.y - lastDragY) * fine / pxPerDb;
+    if (onPlane) dragDbAccum += planeStepDb;
+    else
+    {
+        dragDbAccum -= (e.position.y - lastDragY) * fine / pxPerDb;
+        if (std::abs (dy) < 0.001f) dragDbAccum = 0.0f;   // axis locked horizontally, or back at the start
+    }
     lastDragY = e.position.y;
-    if (std::abs (dy) < 0.001f) dragDbAccum = 0.0f;   // axis locked horizontally, or back at the start
     const float dDb = dragDbAccum;
     const bool qMode = e.mods.isCommandDown();
 
@@ -1844,7 +1864,7 @@ void EqDisplay::mouseDown (const juce::MouseEvent& e)
     {
         if (! selection.contains (db3)) select (db3);
         drag = Drag::depth;
-        depthGrabOffset = depthHandle (db3).y - e.position.y;
+        depthGrabOffset = depthHandle (db3) - e.position;
         const auto& p = bands[(size_t) db3];
         dragStarts = { { db3, p.freq, p.gain, p.q, p.dynRange, p } };
         proc.undoManager.beginNewTransaction ("Depth");
@@ -1943,7 +1963,8 @@ void EqDisplay::mouseDrag (const juce::MouseEvent& e)
             break;
 
         case Drag::depth:
-            setPlain (dragStarts.front().band, "depth", 100.0f * depthForFloorY (e.position.y + depthGrabOffset));
+            setPlain (dragStarts.front().band, "depth",
+                      100.0f * depthAlongFloor (bands[(size_t) dragStarts.front().band].freq, e.position + depthGrabOffset));
             break;
 
         case Drag::dynRange:

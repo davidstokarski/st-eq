@@ -7,7 +7,6 @@ namespace steq
 
 namespace
 {
-    constexpr float kBackScale = 0.6f;   // the back plane's size relative to the front one (perspective)
     const char* viewNames[3] = { "3D", "TOP", "FRONT" };
 
     float uFor (float hz, float lo, float hi) noexcept { return std::log (juce::jmax (lo, hz) / lo) / std::log (hi / lo); }
@@ -31,36 +30,99 @@ void EqDisplay::setView (View v)
     repaint();
 }
 
-juce::Rectangle<float> EqDisplay::planeAt (float w) const noexcept
+// The 3D camera: the box (frequency -1..1 across, gain up, depth 0..kBoxDepth back) seen from above and a little
+// to the left, turned so the high end and the back recede; perspective, then fitted to the plot.
+namespace
 {
-    // front plane low and wide, back plane smaller and higher: the floor (-range) recedes into the screen
-    const float H = plot.getHeight() - 18.0f, W = plot.getWidth();
-    // a low camera: the floor is a shallow band, depth mostly shrinks things towards the middle
-    const float f1 = compact ? 0.30f : 0.26f, f2 = compact ? 0.94f : 0.76f, b2 = compact ? 0.72f : 0.56f;
-    const juce::Rectangle<float> front (plot.getX() + W * 0.07f, plot.getY() + H * f1, W * 0.82f, H * (f2 - f1));
-    const float bw = front.getWidth() * kBackScale, bh = front.getHeight() * kBackScale;
-    const juce::Rectangle<float> back (front.getCentreX() - bw * 0.5f, plot.getY() + H * b2 - bh, bw, bh);
+    constexpr float kBoxHalfH = 0.42f, kBoxDepth = 1.05f, kDist = 2.5f;
+    const float kYawC = std::cos (0.15f), kYawS = std::sin (0.15f), kPitchC = std::cos (0.40f), kPitchS = std::sin (0.40f);
 
-    // perspective: equal depth steps get smaller towards the back
-    const float a = 1.0f / kBackScale - 1.0f;
-    const float s = 1.0f / (1.0f + juce::jlimit (0.0f, 1.0f, w) * a);
-    const float t = (1.0f - s) / (1.0f - kBackScale);
-    return { front.getX() + (back.getX() - front.getX()) * t, front.getY() + (back.getY() - front.getY()) * t,
-             front.getWidth() + (back.getWidth() - front.getWidth()) * t, front.getHeight() + (back.getHeight() - front.getHeight()) * t };
+    juce::Point<float> rawProject (float X, float Y, float Z) noexcept
+    {
+        const float pz = Z - kBoxDepth * 0.5f;
+        const float x1 = X * kYawC - pz * kYawS, z1 = X * kYawS + pz * kYawC;
+        const float y2 = Y * kPitchC + z1 * kPitchS, z2 = -Y * kPitchS + z1 * kPitchC;
+        const float s = kDist / (kDist + z2);
+        return { x1 * s, y2 * s };
+    }
+}
+
+const EqDisplay::Camera& EqDisplay::getCamera() const noexcept
+{
+    if (camera.valid && camera.key == plot) return camera;
+    const float H = plot.getHeight() - 18.0f, W = plot.getWidth();
+    const auto target = compact ? juce::Rectangle<float> (plot.getX() + W * 0.04f, plot.getY() + H * 0.10f, W * 0.92f, H * 0.84f)
+                                : juce::Rectangle<float> (plot.getX() + W * 0.07f, plot.getY() + H * 0.15f, W * 0.85f, H * 0.62f);
+    float x0 = 1.0e9f, x1 = -1.0e9f, y0 = 1.0e9f, y1 = -1.0e9f;
+    for (float X : { -1.0f, 1.0f })
+        for (float Y : { -kBoxHalfH, kBoxHalfH * 1.2f })
+            for (float Z : { 0.0f, kBoxDepth })
+            {
+                const auto p = rawProject (X, Y, Z);
+                x0 = juce::jmin (x0, p.x); x1 = juce::jmax (x1, p.x); y0 = juce::jmin (y0, p.y); y1 = juce::jmax (y1, p.y);
+            }
+    camera.kx = target.getWidth() / juce::jmax (1.0e-6f, x1 - x0);
+    camera.ky = target.getHeight() / juce::jmax (1.0e-6f, y1 - y0);
+    camera.ox = target.getX() - x0 * camera.kx;
+    camera.oy = target.getBottom() + y0 * camera.ky;
+    camera.key = plot;
+    camera.valid = true;
+    return camera;
+}
+
+juce::Point<float> EqDisplay::projectUnit (float u, float v, float depth) const noexcept
+{
+    const auto& c = getCamera();
+    const auto p = rawProject (u * 2.0f - 1.0f, v * kBoxHalfH, juce::jlimit (0.0f, 1.0f, depth) * kBoxDepth);
+    return { c.ox + p.x * c.kx, c.oy - p.y * c.ky };
 }
 
 juce::Point<float> EqDisplay::project (float hz, float db, float depth) const noexcept
 {
-    const auto r = planeAt (depth);
-    return { r.getX() + uFor (hz, minHz, maxHz) * r.getWidth(), r.getCentreY() - db / displayRange * r.getHeight() * 0.5f };
+    return projectUnit (uFor (hz, minHz, maxHz), db / juce::jmax (0.1f, displayRange), depth);
 }
 
-float EqDisplay::depthForFloorY (float y) const noexcept
+bool EqDisplay::planePoint (juce::Point<float> pt, float depth, float& hz, float& db) const noexcept
 {
-    const float f = planeAt (0.0f).getBottom(), b = planeAt (1.0f).getBottom();
-    const float t = juce::jlimit (0.0f, 1.0f, (y - f) / (b - f));
-    const float s = 1.0f - t * (1.0f - kBackScale);
-    return juce::jlimit (0.0f, 1.0f, (1.0f / s - 1.0f) / (1.0f / kBackScale - 1.0f));
+    // the plane at a depth is a projective image of (u, v): Newton converges in a few steps
+    float u = 0.5f, v = 0.0f;
+    for (int it = 0; it < 16; ++it)
+    {
+        const auto p = projectUnit (u, v, depth);
+        const float ex = p.x - pt.x, ey = p.y - pt.y;
+        if (std::abs (ex) + std::abs (ey) < 0.002f) break;
+        constexpr float e = 1.0e-3f;
+        const auto pu = projectUnit (u + e, v, depth), pv = projectUnit (u, v + e, depth);
+        const float a = (pu.x - p.x) / e, b = (pv.x - p.x) / e, c = (pu.y - p.y) / e, d = (pv.y - p.y) / e;
+        const float det = a * d - b * c;
+        if (std::abs (det) < 1.0e-6f) return false;
+        u = juce::jlimit (-1.0f, 2.0f, u - (d * ex - b * ey) / det);
+        v = juce::jlimit (-20.0f, 20.0f, v - (-c * ex + a * ey) / det);
+    }
+    hz = minHz * std::pow (maxHz / minHz, u);
+    db = v * displayRange;
+    return true;
+}
+
+float EqDisplay::depthAlongFloor (float hz, juce::Point<float> pt) const noexcept
+{
+    auto dist = [&] (float w) { return project (hz, -displayRange, w).getDistanceSquaredFrom (pt); };
+    float best = 0.0f, bestD = 1.0e18f;
+    for (int i = 0; i <= 40; ++i)
+        if (const float d = dist ((float) i / 40.0f); d < bestD) { bestD = d; best = (float) i / 40.0f; }
+    float lo = juce::jmax (0.0f, best - 0.025f), hi = juce::jmin (1.0f, best + 0.025f);
+    for (int i = 0; i < 24; ++i)
+    {
+        const float a = lo + (hi - lo) / 3.0f, b = hi - (hi - lo) / 3.0f;
+        if (dist (a) < dist (b)) hi = b; else lo = a;
+    }
+    return juce::jlimit (0.0f, 1.0f, 0.5f * (lo + hi));
+}
+
+float EqDisplay::depthScale (float depth) const noexcept
+{
+    const float front = projectUnit (0.0f, 0.0f, 0.0f).getDistanceFrom (projectUnit (1.0f, 0.0f, 0.0f));
+    return projectUnit (0.0f, 0.0f, depth).getDistanceFrom (projectUnit (1.0f, 0.0f, depth)) / juce::jmax (1.0f, front);
 }
 
 juce::Rectangle<float> EqDisplay::topArea() const noexcept
@@ -145,11 +207,30 @@ juce::Point<float> EqDisplay::frontPointFor (juce::Point<float> pt, float& depth
         depth = topDepth (pt.y);
         return { pt.x, yForDb (0.0f) };
     }
-    const auto r = planeAt (0.0f);
-    const float u = juce::jlimit (0.0f, 1.0f, (pt.x - r.getX()) / juce::jmax (1.0f, r.getWidth()));
-    const float hz = minHz * std::pow (maxHz / minHz, u);
-    const float db = (r.getCentreY() - pt.y) / (r.getHeight() * 0.5f) * displayRange;
-    return { xForHz (hz), yForDb (db) };
+    float hz = 1000.0f, db = 0.0f;
+    if (! planePoint (pt, 0.0f, hz, db)) return { pt.x, yForDb (0.0f) };
+    return { xForHz (juce::jlimit (minHz, maxHz, hz)), yForDb (db) };
+}
+
+bool EqDisplay::pushWaterfall (double dt)
+{
+    // a new slice ~30 times a second; the oldest falls off the back
+    waterfallClock += dt;
+    if (waterfallClock < 1.0 / 30.0) return false;
+    waterfallClock = 0.0;
+    const auto& src = analyzer.post ? *postSpectrum : *preSpectrum;
+    const int n = src.getNumPoints();
+    if (n <= 0 || ! (analyzer.post || analyzer.pre)) { waterfallCount = 0; return false; }
+    if ((int) waterfallHz.size() != n)
+    {
+        waterfallHz.resize ((size_t) n);
+        for (int i = 0; i < n; ++i) waterfallHz[(size_t) i] = src.getFrequencyForPoint (i);
+        waterfallCount = 0;
+    }
+    waterfallHead = (waterfallHead + 1) % kWaterfall;
+    waterfall[(size_t) waterfallHead] = src.getLevelsDb();
+    waterfallCount = juce::jmin (kWaterfall, waterfallCount + 1);
+    return true;
 }
 
 //==============================================================================
@@ -179,10 +260,10 @@ void EqDisplay::paint3D (juce::Graphics& g)
 {
     const auto& t = st::Theme::get();
     const float range = displayRange;
-    const auto F = planeAt (0.0f), B = planeAt (1.0f);
     auto P = [this] (float hz, float db, float w) { return project (hz, db, w); };
     auto clampDb = [range] (float db) { return juce::jlimit (-range, range * 1.2f, db); };
     auto line = [&g] (juce::Point<float> a, juce::Point<float> b, float width = 1.0f) { g.drawLine ({ a, b }, width); };
+    const juce::Colour ice (0xffa9dcee);   // the analyser waterfall
 
     g.saveState();
     g.reduceClipRegion (plot.withBottom (plot.getBottom() - (compact ? 0.0f : 2.0f)).toNearestInt());
@@ -190,131 +271,189 @@ void EqDisplay::paint3D (juce::Graphics& g)
     // floor and back wall
     {
         juce::Path floor;
-        floor.startNewSubPath (F.getBottomLeft());
-        floor.lineTo (F.getBottomRight());
-        floor.lineTo (B.getBottomRight());
-        floor.lineTo (B.getBottomLeft());
+        floor.startNewSubPath (P (minHz, -range, 0.0f));
+        floor.lineTo (P (maxHz, -range, 0.0f));
+        floor.lineTo (P (maxHz, -range, 1.0f));
+        floor.lineTo (P (minHz, -range, 1.0f));
         floor.closeSubPath();
-        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.05f), 0.0f, F.getBottom(),
-                                                 juce::Colours::white.withAlpha (0.015f), 0.0f, B.getBottom(), false));
+        const auto f0 = P (1000.0f, -range, 0.0f), f1 = P (1000.0f, -range, 1.0f);
+        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.045f), f0.x, f0.y,
+                                                 juce::Colours::white.withAlpha (0.012f), f1.x, f1.y, false));
         g.fillPath (floor);
-        g.setColour (juce::Colours::white.withAlpha (0.02f));
-        g.fillRect (B);
+        juce::Path wall;
+        wall.startNewSubPath (P (minHz, -range, 1.0f));
+        wall.lineTo (P (maxHz, -range, 1.0f));
+        wall.lineTo (P (maxHz, range, 1.0f));
+        wall.lineTo (P (minHz, range, 1.0f));
+        wall.closeSubPath();
+        g.setColour (juce::Colours::white.withAlpha (0.015f));
+        g.fillPath (wall);
     }
 
-    // frequency lines along the floor and up the back wall
+    // fine grid: frequency lines along the floor and up the back wall, depth lines across the floor
     for (float decade : { 10.0f, 100.0f, 1000.0f, 10000.0f })
         for (int m = 1; m <= 9; ++m)
         {
             const float hz = decade * (float) m;
             if (hz < minHz || hz > maxHz) continue;
-            const float a = m == 1 ? 0.08f : (m == 2 || m == 5 ? 0.05f : 0.025f);
+            const float a = m == 1 ? 0.075f : (m == 2 || m == 5 ? 0.045f : 0.022f);
             g.setColour (juce::Colours::white.withAlpha (a));
-            line (P (hz, -range, 0.0f), P (hz, -range, 1.0f));
-            g.setColour (juce::Colours::white.withAlpha (a * 0.7f));
-            line (P (hz, -range, 1.0f), P (hz, range, 1.0f));
+            line (P (hz, -range, 0.0f), P (hz, -range, 1.0f), 0.8f);
+            g.setColour (juce::Colours::white.withAlpha (a * 0.6f));
+            line (P (hz, -range, 1.0f), P (hz, range, 1.0f), 0.8f);
         }
-
-    // depth lines across the floor; floor edges; the 0 dB plane's edges
-    for (float w : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f })
+    for (int k = 0; k <= 8; ++k)
     {
-        g.setColour (juce::Colours::white.withAlpha (w == 0.0f || w == 1.0f ? 0.10f : 0.045f));
-        line (P (minHz, -range, w), P (maxHz, -range, w));
+        const float w = (float) k / 8.0f;
+        g.setColour (juce::Colours::white.withAlpha (k == 0 || k == 8 ? 0.10f : (k % 2 == 0 ? 0.04f : 0.022f)));
+        line (P (minHz, -range, w), P (maxHz, -range, w), 0.8f);
     }
-    g.setColour (juce::Colours::white.withAlpha (0.08f));
+
+    // box edges: floor sides, the back wall's frame, the front left post (the dB scale) and the 0 dB plane's sides
+    g.setColour (juce::Colours::white.withAlpha (0.09f));
     line (P (minHz, -range, 0.0f), P (minHz, -range, 1.0f));
     line (P (maxHz, -range, 0.0f), P (maxHz, -range, 1.0f));
-    g.setColour (juce::Colours::white.withAlpha (0.06f));
-    line (P (minHz, 0.0f, 0.0f), P (minHz, 0.0f, 1.0f));
-    line (P (maxHz, 0.0f, 0.0f), P (maxHz, 0.0f, 1.0f));
     line (P (minHz, range, 1.0f), P (maxHz, range, 1.0f));
     line (P (minHz, range, 1.0f), P (minHz, -range, 1.0f));
     line (P (maxHz, range, 1.0f), P (maxHz, -range, 1.0f));
+    g.setColour (juce::Colours::white.withAlpha (0.12f));
+    line (P (minHz, -range, 0.0f), P (minHz, range, 0.0f));
+    g.setColour (juce::Colours::white.withAlpha (0.05f));
+    line (P (minHz, 0.0f, 0.0f), P (minHz, 0.0f, 1.0f));
+    line (P (maxHz, 0.0f, 0.0f), P (maxHz, 0.0f, 1.0f));
 
-    // dB lines on the back wall; 0 dB brighter (and across the front)
+    // dB lines on the back wall (ticks on the front post); 0 dB brighter and across the front
     const float step = range <= 4.5f ? 1.0f : (range <= 9.0f ? 2.0f : (range <= 18.0f ? 3.0f : 6.0f));
     for (float db = -std::floor (range / step + 0.001f) * step; db <= range + 0.01f; db += step)
     {
         const bool zero = std::abs (db) < 0.01f;
-        g.setColour (juce::Colours::white.withAlpha (zero ? 0.10f : 0.035f));
-        line (P (minHz, db, 1.0f), P (maxHz, db, 1.0f));
+        g.setColour (juce::Colours::white.withAlpha (zero ? 0.09f : 0.03f));
+        line (P (minHz, db, 1.0f), P (maxHz, db, 1.0f), 0.8f);
+        const auto a = P (minHz, db, 0.0f);
+        g.setColour (juce::Colours::white.withAlpha (zero ? 0.3f : 0.16f));
+        line (a, a.translated (-5.0f, 0.0f));
     }
-    g.setColour (juce::Colours::white.withAlpha (0.07f));
+    g.setColour (juce::Colours::white.withAlpha (0.06f));
     line (P (minHz, 0.0f, 0.0f), P (maxHz, 0.0f, 0.0f));
 
-    // spectrum on the back wall
-    if (analyzer.pre || analyzer.post)
-    {
-        const float aRange = AnalyzerSettings::ranges[analyzer.rangeIndex];
-        const float nyquist = (float) (sampleRate * 0.5) * 0.985f;
-        auto wallPath = [&] (const st::SpectrumAnalyzer& s, bool closed)
-        {
-            const auto& lv = s.getLevelsDb();
-            juce::Path p;
-            bool started = false;
-            float lastX = B.getX();
-            for (int i = 0; i < (int) lv.size(); ++i)
-            {
-                const float hz = s.getFrequencyForPoint (i);
-                if (hz < minHz || hz > juce::jmin (maxHz, nyquist)) continue;
-                const float x = B.getX() + uFor (hz, minHz, maxHz) * B.getWidth();
-                const float y = B.getBottom() - B.getHeight() * juce::jlimit (0.0f, 1.0f, 1.0f + lv[(size_t) i] / aRange);
-                if (! started) { p.startNewSubPath (x, closed ? B.getBottom() : y); if (closed) p.lineTo (x, y); started = true; }
-                else p.lineTo (x, y);
-                lastX = x;
-            }
-            if (closed && started) { p.lineTo (lastX, B.getBottom()); p.closeSubPath(); }
-            return p;
-        };
-        if (analyzer.pre)
-        {
-            g.setColour (juce::Colours::white.withAlpha (0.06f));
-            g.fillPath (wallPath (*preSpectrum, true));
-        }
-        if (analyzer.post)
-        {
-            g.setColour (t.spectrum.withAlpha (0.09f));
-            g.fillPath (wallPath (*postSpectrum, true));
-            g.setColour (t.spectrum.withAlpha (0.45f));
-            g.strokePath (wallPath (*postSpectrum, false), juce::PathStrokeType (1.0f, juce::PathStrokeType::curved));
-        }
-    }
-
-    // each band's curve standing at its depth, back to front
-    std::array<int, kMaxBands> order {};
-    for (int b = 0; b < kMaxBands; ++b) order[(size_t) b] = b;
-    std::stable_sort (order.begin(), order.end(), [this] (int a, int b) { return bands[(size_t) a].depth > bands[(size_t) b].depth; });
+    // --- what stands in the box, back to front: each band's curve at its depth and the analyser waterfall ---
     const int solo = proc.soloBand.load();
-    for (int b : order)
+    const float aRange = AnalyzerSettings::ranges[analyzer.rangeIndex];
+    const float topHz = juce::jmin (maxHz, (float) (sampleRate * 0.5) * 0.985f);
+    constexpr float kWaterfallSpan = 0.36f;   // the waterfall covers the front of the floor
+    auto sliceDb = [&] (float lv) { return -range + 2.0f * range * 0.68f * juce::jlimit (0.0f, 1.0f, 1.0f + lv / aRange); };
+
+    // a slice: the spectrum stood up at a depth (decimated, keeping peaks)
+    auto slicePath = [&] (const std::vector<float>& lv, const std::vector<float>& hz, float w, bool closed, int maxPoints)
     {
+        juce::Path p;
+        const int n = (int) juce::jmin (lv.size(), hz.size());
+        int i0 = 0, i1 = n - 1;
+        while (i0 < n && hz[(size_t) i0] < 20.0f) ++i0;
+        while (i1 > i0 && hz[(size_t) i1] > topHz) --i1;
+        if (i1 - i0 < 2) return p;
+        const int stride = juce::jmax (1, (i1 - i0) / maxPoints);
+        bool started = false;
+        juce::Point<float> last;
+        for (int i = i0; i <= i1; i += stride)
+        {
+            float m = -200.0f;
+            for (int j = i; j < juce::jmin (i1 + 1, i + stride); ++j) m = juce::jmax (m, lv[(size_t) j]);
+            const auto pt = P (hz[(size_t) i], sliceDb (m), w);
+            if (! started)
+            {
+                if (closed) { p.startNewSubPath (P (hz[(size_t) i], -range, w)); p.lineTo (pt); }
+                else p.startNewSubPath (pt);
+                started = true;
+            }
+            else p.lineTo (pt);
+            last = P (hz[(size_t) i], -range, w);
+        }
+        if (closed) { p.lineTo (last); p.closeSubPath(); }
+        return p;
+    };
+
+    struct Layer { float depth; int kind; int index; };   // kind 0: waterfall slice (index = age), 1: band
+    std::vector<Layer> layers;
+    layers.reserve ((size_t) (kMaxBands + kWaterfall + 1));
+    const bool showWaterfall = (analyzer.pre || analyzer.post) && waterfallCount > 0;
+    if (showWaterfall)
+        for (int age = 0; age < waterfallCount; ++age)
+            layers.push_back ({ kWaterfallSpan * (float) age / (float) (kWaterfall - 1), 0, age });
+    for (int b = 0; b < kMaxBands; ++b)
+        if (bands[(size_t) b].used && curves[(size_t) b].valid) layers.push_back ({ bands[(size_t) b].depth * 0.01f, 1, b });
+    std::stable_sort (layers.begin(), layers.end(), [] (const Layer& a, const Layer& b)
+    {
+        if (! juce::exactlyEqual (a.depth, b.depth)) return a.depth > b.depth;
+        return a.kind < b.kind;   // at the same depth the band's curve stays in front of the spectrum
+    });
+
+    for (const auto& L : layers)
+    {
+        if (L.kind == 0)
+        {
+            const auto& lv = waterfall[(size_t) ((waterfallHead - L.index + kWaterfall) % kWaterfall)];
+            if (lv.empty()) continue;
+            const float age = (float) L.index / (float) (kWaterfall - 1), fade = std::pow (1.0f - age, 1.4f);
+            const bool newest = L.index == 0;
+            const int pts = newest ? 240 : 80;
+            // the newest slice is a lit surface; every few older ones hide a little of what's behind (a terrain)
+            if (newest)
+            {
+                const auto top = P (1000.0f, range * 0.36f, L.depth), bottom = P (1000.0f, -range, L.depth);
+                g.setGradientFill (juce::ColourGradient (ice.withAlpha (0.15f), top.x, top.y, t.bg0.withAlpha (0.5f), bottom.x, bottom.y, false));
+                g.fillPath (slicePath (lv, waterfallHz, L.depth, true, pts));
+            }
+            else if (L.index == 4 || L.index == 9)
+            {
+                g.setColour (t.bg0.withAlpha (0.22f * fade));
+                g.fillPath (slicePath (lv, waterfallHz, L.depth, true, pts));
+            }
+            if (newest && analyzer.pre && analyzer.post)
+            {
+                // pre: a faint silhouette on the newest slice
+                if ((int) preHz.size() != preSpectrum->getNumPoints())
+                {
+                    preHz.resize ((size_t) preSpectrum->getNumPoints());
+                    for (int i = 0; i < (int) preHz.size(); ++i) preHz[(size_t) i] = preSpectrum->getFrequencyForPoint (i);
+                }
+                g.setColour (juce::Colours::white.withAlpha (0.05f));
+                g.fillPath (slicePath (preSpectrum->getLevelsDb(), preHz, 0.0f, true, 160));
+            }
+            g.setColour (ice.withAlpha (newest ? 0.9f : 0.025f + 0.22f * fade * fade));
+            g.strokePath (slicePath (lv, waterfallHz, L.depth, false, pts), juce::PathStrokeType (newest ? 1.3f : 0.8f));
+            continue;
+        }
+
+        const int b = L.index;
         const auto& p = bands[(size_t) b];
         const auto& c = curves[(size_t) b];
-        if (! p.used || ! c.valid) continue;
-        const float w = p.depth * 0.01f;
+        const float w = L.depth;
         const bool sel = selection.contains (b);
         const float s = selectAmt[(size_t) b].current, h = hoverAmt[(size_t) b].current;
         const auto col = (p.isActive() ? bandColour (b) : t.textFaint).withMultipliedAlpha (solo >= 0 && solo != b ? 0.3f : 1.0f);
 
-        juce::Path curve;
+        // a thin curve at the band's depth with a faint curtain down (or up) to its 0 dB line
+        juce::Path curve, curtain;
         for (int i = 0; i < kPoints; i += 2)
         {
             const auto pt = P (freqs[(size_t) i], clampDb (c.db[(size_t) i]), w);
             if (i == 0) curve.startNewSubPath (pt); else curve.lineTo (pt);
         }
-        auto area = curve;
-        area.lineTo (P (freqs[(size_t) kPoints - 2], 0.0f, w));
-        area.lineTo (P (freqs[0], 0.0f, w));
-        area.closeSubPath();
-        g.setColour (col.withAlpha ((p.isActive() ? 0.10f : 0.04f) + 0.20f * s + 0.08f * h));
-        g.fillPath (area);
-        g.setColour (col.withAlpha (sel ? 0.9f : (0.35f + 0.4f * h) * (p.isActive() ? 1.0f : 0.5f)));
-        g.strokePath (curve, juce::PathStrokeType (sel ? 1.5f : 1.0f, juce::PathStrokeType::curved));
+        curtain = curve;
+        curtain.lineTo (P (freqs[(size_t) kPoints - 2], 0.0f, w));
+        curtain.lineTo (P (freqs[0], 0.0f, w));
+        curtain.closeSubPath();
+        g.setColour (col.withAlpha ((p.isActive() ? 0.03f : 0.015f) + 0.11f * s + 0.05f * h));
+        g.fillPath (curtain);
+        g.setColour (col.withAlpha (sel ? 0.95f : (0.24f + 0.45f * h) * (p.isActive() ? 1.0f : 0.5f)));
+        g.strokePath (curve, juce::PathStrokeType (sel ? 1.6f : 1.0f, juce::PathStrokeType::curved));
     }
 
-    // the total curve runs through the bands' depths; its shadow on the floor
+    // the total curve runs through the bands' depths: a soft curtain to 0 dB, its shadow on the floor, a glow
     std::array<float, kPoints> dep {};
     curveDepths (dep);
-    juce::Path total, shadow;
+    juce::Path total, shadow, curtain;
     for (int i = 0; i < kPoints; ++i)
     {
         const auto pt = P (freqs[(size_t) i], clampDb (totals[0][(size_t) i]), dep[(size_t) i]);
@@ -322,10 +461,19 @@ void EqDisplay::paint3D (juce::Graphics& g)
         if (i == 0) { total.startNewSubPath (pt); shadow.startNewSubPath (sh); }
         else        { total.lineTo (pt); shadow.lineTo (sh); }
     }
-    g.setColour (t.curve.withAlpha (0.18f));
-    g.strokePath (shadow, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved));
-    g.setColour (juce::Colours::black.withAlpha (0.35f));
-    g.strokePath (total, juce::PathStrokeType (3.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    curtain = total;
+    for (int i = kPoints - 1; i >= 0; i -= 3)
+        curtain.lineTo (P (freqs[(size_t) i], 0.0f, dep[(size_t) i]));
+    curtain.lineTo (P (freqs[0], 0.0f, dep[0]));
+    curtain.closeSubPath();
+    g.setColour (t.curve.withAlpha (0.045f));
+    g.fillPath (curtain);
+    g.setColour (t.curve.withAlpha (0.14f));
+    g.strokePath (shadow, juce::PathStrokeType (1.2f, juce::PathStrokeType::curved));
+    g.setColour (t.curve.withAlpha (0.10f));
+    g.strokePath (total, juce::PathStrokeType (7.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    g.setColour (juce::Colours::black.withAlpha (0.3f));
+    g.strokePath (total, juce::PathStrokeType (3.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     g.setColour (t.curve);
     g.strokePath (total, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
@@ -345,7 +493,7 @@ void EqDisplay::paint3D (juce::Graphics& g)
         g.setColour (col.withAlpha (0.25f + 0.35f * hv));
         g.fillPath (dashed);
         // the handle: a flat disc on the floor (scaled with the distance)
-        const float k = planeAt (p.depth * 0.01f).getWidth() / F.getWidth();
+        const float k = depthScale (p.depth * 0.01f);
         const auto disc = juce::Rectangle<float> ((11.0f + 3.0f * hv) * k, (5.0f + 1.5f * hv) * k).withCentre (fh);
         g.setColour (col.withAlpha (0.45f + 0.45f * hv));
         g.fillEllipse (disc);
@@ -357,7 +505,7 @@ void EqDisplay::paint3D (juce::Graphics& g)
     }
     g.restoreState();
 
-    // labels: frequency along the front edge, dB at the front plane's left, depth along the right floor edge
+    // labels: frequency along the front edge, dB up the front post, near / far along the right floor edge
     if (! compact)
     {
         g.setFont (st::fonts::medium (10.0f));
@@ -366,7 +514,7 @@ void EqDisplay::paint3D (juce::Graphics& g)
         {
             const auto pt = P (hz, -range, 0.0f);
             const auto label = hz >= 1000.0f ? juce::String ((int) (hz / 1000.0f)) + "k" : juce::String ((int) hz);
-            g.drawText (label, juce::Rectangle<float> (pt.x - 20.0f, pt.y + 4.0f, 40.0f, 14.0f), juce::Justification::centred, false);
+            g.drawText (label, juce::Rectangle<float> (pt.x - 20.0f, pt.y + 5.0f, 40.0f, 14.0f), juce::Justification::centred, false);
         }
         g.setFont (st::fonts::semibold (10.0f));
         for (float db = -std::floor (range / step + 0.001f) * step; db <= range + 0.01f; db += step)
@@ -375,20 +523,31 @@ void EqDisplay::paint3D (juce::Graphics& g)
             const auto pt = P (minHz, db, 0.0f);
             g.setColour (t.curve.withAlpha (zero ? 0.95f : 0.75f));
             g.drawText (zero ? juce::String ("0") : (db > 0 ? "+" : "") + juce::String ((int) db),
-                        juce::Rectangle<float> (pt.x - 34.0f, pt.y - 7.0f, 28.0f, 14.0f), juce::Justification::centredRight, false);
+                        juce::Rectangle<float> (pt.x - 38.0f, pt.y - 7.0f, 28.0f, 14.0f), juce::Justification::centredRight, false);
         }
         g.setFont (st::fonts::medium (10.0f));
         g.setColour (t.textDim);
-        for (float w : { 0.0f, 0.5f, 1.0f })
+        const auto nearPt = P (maxHz, -range, 0.0f), farPt = P (maxHz, -range, 1.0f);
+        g.drawText ("near", juce::Rectangle<float> (nearPt.x + 6.0f, nearPt.y - 7.0f, 40.0f, 14.0f), juce::Justification::centredLeft, false);
+        g.drawText ("far", juce::Rectangle<float> (farPt.x + 6.0f, farPt.y - 7.0f, 40.0f, 14.0f), juce::Justification::centredLeft, false);
+
+        // axis gizmo under the view buttons: X (frequency), Y (gain), Z (depth, towards you)
+        const auto vb = getViewButton (View::front);
+        const juce::Point<float> o (vb.getRight() - 24.0f, vb.getBottom() + 34.0f);
+        auto dir = [] (juce::Point<float> a, juce::Point<float> b) { const auto d = b - a; return d / juce::jmax (0.001f, d.getDistanceFromOrigin()); };
+        const auto c0 = projectUnit (0.5f, 0.0f, 0.5f);
+        const juce::Point<float> ax[3] = { dir (c0, projectUnit (0.6f, 0.0f, 0.5f)), dir (c0, projectUnit (0.5f, 0.25f, 0.5f)),
+                                           dir (c0, projectUnit (0.5f, 0.0f, 0.3f)) };
+        const char* names[3] = { "X", "Y", "Z" };
+        g.setFont (st::fonts::medium (9.0f));
+        for (int i = 0; i < 3; ++i)
         {
-            const auto pt = P (maxHz, -range, w);
-            g.drawText (juce::String (juce::roundToInt (w * 100.0f)), juce::Rectangle<float> (pt.x + 6.0f, pt.y - 7.0f, 30.0f, 14.0f),
-                        juce::Justification::centredLeft, false);
+            const auto e = o + ax[i] * 14.0f;
+            g.setColour (juce::Colours::white.withAlpha (0.28f));
+            line (o, e);
+            g.setColour (t.textFaint);
+            g.drawText (names[i], juce::Rectangle<float> (10.0f, 10.0f).withCentre (o + ax[i] * 21.0f), juce::Justification::centred, false);
         }
-        const auto mid = P (maxHz, -range, 0.5f);
-        g.setFont (st::fonts::semibold (9.0f));
-        g.setColour (t.textFaint);
-        g.drawText ("DEPTH", juce::Rectangle<float> (mid.x + 6.0f, mid.y + 6.0f, 40.0f, 12.0f), juce::Justification::centredLeft, false);
     }
 }
 

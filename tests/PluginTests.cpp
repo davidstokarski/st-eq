@@ -1196,6 +1196,27 @@ static void testDisplay3D (StEqProcessor& p)
         d.paintEntireComponent (g, true);
     }
     check (true, "all views paint");
+
+    // 3D analyser waterfall: fills with recent spectra while audio plays; repaints stay cheap
+    {
+        d.setView (View::threeD);
+        juce::AudioBuffer<float> buf (2, 800);
+        juce::MidiBuffer midi;
+        juce::Random rng (7);
+        for (int k = 0; k < 60; ++k)
+        {
+            for (int i = 0; i < 800; ++i) { const float v = (rng.nextFloat() - 0.5f) * 0.5f; buf.setSample (0, i, v); buf.setSample (1, i, v); }
+            p.processBlock (buf, midi);
+            d.advanceFrame (1.0 / 30.0);
+        }
+        juce::Image im (juce::Image::ARGB, d.getWidth() * 2, d.getHeight() * 2, true);
+        constexpr int frames = 20;
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        for (int i = 0; i < frames; ++i) { juce::Graphics g (im); g.addTransform (juce::AffineTransform::scale (2.0f)); d.paintEntireComponent (g, true); }
+        const double ms = (juce::Time::getMillisecondCounterHiRes() - t0) / frames;
+        std::cout << "   3D view with waterfall: " << juce::String (ms, 2) << " ms\n";
+        check (ms < 12.0, "3D view with the analyser waterfall paints within a frame (" + juce::String (ms, 2) + " ms)");
+    }
     m.click (d.getViewButton (View::threeD).getCentre());
     check (d.getView() == View::threeD, "view button: 3D");
 
