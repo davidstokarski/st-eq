@@ -125,6 +125,10 @@ public:
     juce::Rectangle<float> getReadoutPart (int band, const juce::String& part) const;
     /** Shows the free trigger range bar of `band` at local y (band < 0 hides it). */
     void setTriggerBar (int band, float y) { triggerBand = band; triggerBarY = y; repaint(); }
+    /** Frosted glass under the band island: inside `outline` (local coordinates) the display is drawn blurred,
+        together with what lies behind it (`paintBackdrop`, in local coordinates), faded in by `alpha`. */
+    void setFrost (const juce::Path& outline, float alpha);
+    std::function<void (juce::Graphics&)> paintBackdrop;
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -317,6 +321,10 @@ private:
     void paintGrid (juce::Graphics&);
     void paintCurves (juce::Graphics&);
     void paintSpectrum (juce::Graphics&);
+    void paintFrost (juce::Graphics&);
+    juce::Path frostOutline;
+    float frostAlpha = 0.0f;
+    juce::Image frostImage;
     void paintDots (juce::Graphics&);
     void paintDynHandles (juce::Graphics&);
     void paintPreview (juce::Graphics&);

@@ -35,6 +35,7 @@ private:
     std::unique_ptr<steq::BandPanel> panel, outgoing;
     std::unique_ptr<steq::MatchPopover> matchPopover;
     st::Animated panelX, panelFade, outgoingFade;
+    juce::Image backdropCopy;   // window backdrop at half resolution (the island's frosted glass)
     int panelCount = -1;
 
     void layout (juce::Rectangle<int> body) override;

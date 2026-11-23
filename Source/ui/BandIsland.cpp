@@ -131,33 +131,47 @@ juce::PopupMenu makeShapeMenu (int current)
 //==============================================================================
 namespace
 {
-    /** Dark tab on the island edge (shape / placement). */
-    void paintTab (juce::Graphics& g, juce::Rectangle<float> r, bool hover, juce::Colour tint = {})
+    /** The island's own neutral greys (the theme's text colours are warm; the island is cool graphite glass). */
+    namespace ink
     {
-        const auto& t = st::Theme::get();
-        g.setColour (juce::Colours::black.withAlpha (0.3f));
-        g.fillRoundedRectangle (r.translated (0.0f, 1.0f), 5.0f);
-        g.setGradientFill (juce::ColourGradient (t.bg4.withAlpha (hover ? 0.95f : 0.8f), 0.0f, r.getY(), t.bg3.withAlpha (0.9f), 0.0f, r.getBottom(), false));
-        g.fillRoundedRectangle (r, 5.0f);
-        g.setColour (juce::Colours::white.withAlpha (hover ? 0.16f : 0.1f));
-        g.drawRoundedRectangle (r.reduced (0.5f), 5.0f, 1.0f);
-        if (! tint.isTransparent())
-        {
-            g.setColour (tint.withAlpha (hover ? 0.4f : 0.26f));
-            g.drawRoundedRectangle (r.reduced (0.5f), 5.0f, 1.0f);
-        }
+        const juce::Colour label  { 0xffd4d3d9 };   // knob captions
+        const juce::Colour text   { 0xff97959e };   // tab text, small references
+        const juce::Colour faint  { 0xff6d6b74 };
+        const juce::Colour glassTop    { 0xff1c1b22 };
+        const juce::Colour glassBottom { 0xff15141a };
     }
 
-    /** Small dark square button frame (power / delete). */
-    void paintSmallBox (juce::Graphics& g, juce::Rectangle<float> r)
+    enum class Flush { none, left, right };
+
+    /** Tab outline: rounded, but square on the side that sits flush with the island's edge. */
+    juce::Path tabPath (juce::Rectangle<float> r, float radius, Flush f)
     {
-        const auto& t = st::Theme::get();
-        g.setColour (juce::Colours::black.withAlpha (0.35f));
-        g.fillRoundedRectangle (r.translated (0.0f, 1.0f), 4.0f);
-        g.setColour (t.bg4.brighter (0.08f).withAlpha (0.95f));
-        g.fillRoundedRectangle (r, 4.0f);
-        g.setColour (juce::Colours::white.withAlpha (0.11f));
-        g.drawRoundedRectangle (r.reduced (0.5f), 4.0f, 1.0f);
+        juce::Path p;
+        p.addRoundedRectangle (r.getX(), r.getY(), r.getWidth(), r.getHeight(), radius, radius,
+                               f != Flush::left, f != Flush::right, f != Flush::left, f != Flush::right);
+        return p;
+    }
+
+    /** Tab on the glass (shape / placement flush with the island's edge, trigger free-standing): a slightly lifted
+        fill, a light top edge fading down, no edge on the flush side (the island's border is there). */
+    void paintTab (juce::Graphics& g, juce::Rectangle<float> r, bool hover, Flush flush = Flush::none)
+    {
+        const float radius = juce::jmin (6.5f, r.getHeight() * 0.3f);
+        const auto p = tabPath (r, radius, flush);
+        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (hover ? 0.075f : 0.05f), 0.0f, r.getY(),
+                                                 juce::Colours::white.withAlpha (hover ? 0.05f : 0.028f), 0.0f, r.getBottom(), false));
+        g.fillPath (p);
+
+        g.saveState();
+        auto clip = r;
+        if (flush == Flush::left)  clip.removeFromLeft (1.5f);
+        if (flush == Flush::right) clip.removeFromRight (1.5f);
+        g.reduceClipRegion (clip.toNearestInt());
+        const auto edge = tabPath (r.reduced (0.5f), radius - 0.5f, flush);
+        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (hover ? 0.14f : 0.1f), 0.0f, r.getY(),
+                                                 juce::Colours::white.withAlpha (0.035f), 0.0f, r.getBottom(), false));
+        g.strokePath (edge, juce::PathStrokeType (1.0f));
+        g.restoreState();
     }
 
     //==========================================================================
@@ -250,6 +264,18 @@ namespace
         }
     };
 
+    /** Slope under the shape tab: just the value in grey (brighter on hover); click for the menu, wheel steps. */
+    struct SlopeBox : st::Dropdown
+    {
+        using st::Dropdown::Dropdown;
+        void paint (juce::Graphics& g) override
+        {
+            g.setFont (st::fonts::semibold (12.5f * BandPanel::kScale));
+            g.setColour (isMouseOver (true) ? ink::label : ink::text);
+            g.drawFittedText (param.getCurrentValueAsText(), getLocalBounds(), juce::Justification::centred, 1, 0.8f);
+        }
+    };
+
     /** "⟷ Band" / "⟷ Free" trigger box. */
     struct TriggerButton : juce::Component, juce::SettableTooltipClient
     {
@@ -262,7 +288,6 @@ namespace
         }
         void paint (juce::Graphics& g) override
         {
-            const auto& t = st::Theme::get();
             const bool free = proc.getBand (band).trigger == Trigger::free;
             auto r = getLocalBounds().toFloat().reduced (0.5f);
             paintTab (g, r, isMouseOver());
@@ -272,10 +297,10 @@ namespace
             p.startNewSubPath (icon.getX(), y); p.lineTo (icon.getRight(), y);
             p.startNewSubPath (icon.getX() + 3.0f, y - 3.0f); p.lineTo (icon.getX(), y); p.lineTo (icon.getX() + 3.0f, y + 3.0f);
             p.startNewSubPath (icon.getRight() - 3.0f, y - 3.0f); p.lineTo (icon.getRight(), y); p.lineTo (icon.getRight() - 3.0f, y + 3.0f);
-            g.setColour (t.text.withAlpha (0.8f));
+            g.setColour (ink::text);
             g.strokePath (p, juce::PathStrokeType (1.2f));
-            g.setFont (st::fonts::semibold (11.0f));
-            g.setColour (t.text);
+            g.setFont (st::fonts::medium (11.0f));
+            g.setColour (ink::label);
             g.drawText (free ? "Free" : "Band", r, juce::Justification::centredLeft, false);
         }
         void mouseEnter (const juce::MouseEvent&) override { repaint(); }
@@ -309,25 +334,25 @@ void IslandButton::timerCallback()
 
 void IslandButton::paintButton (juce::Graphics& g, bool, bool)
 {
-    const auto& t = st::Theme::get();
     auto r = getLocalBounds().toFloat();
     const auto area = r.reduced (juce::jmax (2.5f, r.getHeight() * 0.17f));
     const float h = hover.current, on = lit.current;
 
-    // rests dim, eases to white on hover; "on" lights in its colour with a soft glow
-    auto col = t.textDim.withAlpha (isEnabled() ? 0.75f : 0.35f).interpolatedWith (t.text, h);
+    // neutral grey at rest (the delete cross brighter), eases to white on hover; "on" lights in its colour with a soft glow
+    const auto rest = emphasis ? juce::Colour (0xffe6e5ea) : juce::Colour (0xffb3b2b9);
+    auto col = rest.withAlpha (isEnabled() ? (emphasis ? 0.95f : 0.85f) : 0.3f).interpolatedWith (juce::Colours::white, h);
     if (on > 0.001f && ! onColour.isTransparent())
     {
         col = col.interpolatedWith (onColour.brighter (0.15f * h), on);
         g.setColour (onColour.withAlpha (0.07f * on));
         g.fillEllipse (area.expanded (1.0f));
     }
-    st::icons::draw (g, icon, area, col, 1.5f);
+    st::icons::draw (g, icon, area, col, emphasis ? 2.0f : 1.4f);
 }
 
 //==============================================================================
-ShapeButton::ShapeButton (juce::RangedAudioParameter& p, juce::UndoManager& um, juce::Colour c)
-    : undo (um), attachment (p, [this] (float v) { index = juce::roundToInt (v); repaint(); }, &um), tint (c)
+ShapeButton::ShapeButton (juce::RangedAudioParameter& p, juce::UndoManager& um, juce::Colour)
+    : undo (um), attachment (p, [this] (float v) { index = juce::roundToInt (v); repaint(); }, &um)
 {
     attachment.sendInitialUpdate();
     setTooltip ("Filter shape (wheel to step)");
@@ -342,15 +367,16 @@ void ShapeButton::setIndex (int i)
 
 void ShapeButton::paint (juce::Graphics& g)
 {
-    const auto& t = st::Theme::get();
-    auto r = getLocalBounds().toFloat().reduced (0.5f);
-    paintTab (g, r, isMouseOver(), tint);
-    auto glyph = r.removeFromLeft (26.0f).reduced (6.5f, 7.0f).translated (3.0f, 0.0f);
-    g.setColour (t.text.withAlpha (0.75f));
-    g.strokePath (shapeGlyph ((Shape) index, glyph), juce::PathStrokeType (1.3f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    g.setFont (st::fonts::medium (14.5f * BandPanel::kScale));
-    g.setColour (t.textDim);
-    g.drawFittedText (shapeNames[index], r.withTrimmedLeft (2.0f).withTrimmedRight (4.0f).toNearestInt(), juce::Justification::centredLeft, 1, 0.7f);
+    // flush with the island's left edge: glyph at 8.5..22 units, the name from 28.5 units
+    constexpr float s = BandPanel::kScale;
+    auto r = getLocalBounds().toFloat();
+    const bool hover = isMouseOver();
+    paintTab (g, r, hover, Flush::left);
+    const auto glyph = juce::Rectangle<float> (8.5f * s, r.getCentreY() - 3.6f * s, 13.5f * s, 7.2f * s);
+    g.setColour (hover ? ink::label : ink::text);
+    g.strokePath (shapeGlyph ((Shape) index, glyph), juce::PathStrokeType (1.35f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    g.setFont (st::fonts::medium (13.5f * s));
+    g.drawFittedText (shapeNames[index], r.withTrimmedLeft (28.5f * s).withTrimmedRight (4.0f).toNearestInt(), juce::Justification::centredLeft, 1, 0.7f);
 }
 
 void ShapeButton::mouseDown (const juce::MouseEvent& e)
@@ -377,26 +403,34 @@ PlacementButton::PlacementButton (juce::RangedAudioParameter& p, juce::UndoManag
 
 void PlacementButton::paint (juce::Graphics& g)
 {
-    const auto& t = st::Theme::get();
-    auto r = getLocalBounds().toFloat().reduced (0.5f);
-    paintTab (g, r, isMouseOver(), colour);
-    auto icon = r.removeFromLeft (28.0f).reduced (6.0f, 5.0f).translated (2.0f, 0.0f);
+    // flush with the island's right edge: icon at 12..28 units, the band's colour dot at 38.5, the name from 46
+    constexpr float s = BandPanel::kScale;
+    auto r = getLocalBounds().toFloat();
+    const bool hover = isMouseOver();
+    paintTab (g, r, hover, Flush::right);
+    const auto inkCol = hover ? ink::label : ink::text;
+    const float cy = r.getCentreY();
+    g.setColour (inkCol);
     if (index == 0)
-        st::icons::draw (g, st::icons::Icon::stereoLink, icon, t.text.withAlpha (0.75f), 1.3f);
+    {
+        // stereo: two overlapping rings
+        const float rad = 4.6f * s;
+        for (float cx : { 16.6f, 23.4f })
+            g.drawEllipse (juce::Rectangle<float> (rad * 2.0f, rad * 2.0f).withCentre ({ cx * s, cy }), 1.2f);
+    }
     else
     {
         static const char* letters[] = { "", "L", "R", "M", "S" };
-        const auto c = icon.withSizeKeepingCentre (14.0f, 14.0f);
-        g.setColour (t.text.withAlpha (0.75f));
-        g.drawEllipse (c, 1.2f);
-        g.setFont (st::fonts::bold (8.5f));
+        const auto c = juce::Rectangle<float> (11.5f * s, 11.5f * s).withCentre ({ 20.0f * s, cy });
+        g.drawEllipse (c, 1.15f);
+        g.setFont (st::fonts::bold (7.5f));
         g.drawText (letters[index], c, juce::Justification::centred, false);
     }
     g.setColour (colour);
-    g.fillEllipse (juce::Rectangle<float> (4.5f, 4.5f).withCentre ({ r.getX() + 3.0f, r.getCentreY() }));
-    g.setFont (st::fonts::medium (14.5f * BandPanel::kScale));
-    g.setColour (t.textDim);
-    g.drawFittedText (placementNames[index], r.withTrimmedLeft (10.0f).withTrimmedRight (4.0f).toNearestInt(), juce::Justification::centredLeft, 1, 0.7f);
+    g.fillEllipse (juce::Rectangle<float> (4.4f * s, 4.4f * s).withCentre ({ 38.5f * s, cy }));
+    g.setColour (inkCol);
+    g.setFont (st::fonts::medium (13.5f * s));
+    g.drawFittedText (placementNames[index], r.withTrimmedLeft (45.5f * s).withTrimmedRight (3.0f).toNearestInt(), juce::Justification::centredLeft, 1, 0.7f);
 }
 
 void PlacementButton::mouseDown (const juce::MouseEvent& e)
@@ -423,15 +457,14 @@ BandPanel::BandPanel (StEqProcessor& p, int b, int selected, bool expand) : proc
 
     shape = std::make_unique<ShapeButton> (P ("shape"), proc.undoManager, col);
     placement = std::make_unique<PlacementButton> (P ("place"), proc.undoManager, col);
-    slope = std::make_unique<st::Dropdown> (P ("slope"), um);
-    slope->setFlatStyle (true);
+    slope = std::make_unique<SlopeBox> (P ("slope"), um);
     slope->setTooltip ("Filter slope (mouse wheel over a cut filter's dot steps it)");
 
     auto knob = [&] (std::unique_ptr<st::Knob>& k, const char* id, const char* tip)
     {
         k = std::make_unique<st::Knob> (P (id), um, "");
         k->setSize (st::Knob::Size::mini);
-        k->setLook (st::Knob::Look::arc);
+        k->setLook (st::Knob::Look::flat);
         k->setColour (col);
         k->setTooltip (tip);
         addAndMakeVisible (*k);
@@ -465,6 +498,7 @@ BandPanel::BandPanel (StEqProcessor& p, int b, int selected, bool expand) : proc
         addAndMakeVisible (*ib);
     }
 
+    closeButton.setEmphasis (true);
     bypassButton.setOnColour (t.accent2);
     bypassButton.onClick = [this] { proc.undoManager.beginNewTransaction ("Bypass band"); proc.setBandValue (band, "bypass", proc.getBand (band).bypass ? 0.0f : 1.0f); };
     closeButton.onClick = [this] { if (onRemove) onRemove(); };
@@ -618,17 +652,16 @@ void BandPanel::updateState()
 
 void BandPanel::buildOutline()
 {
-    // Reference units (see header). Measured from the original: plain bands have a smooth bell-shaped rise to a
-    // peak over the gain knob; dynamic bands a gentle arch into a tab with a chevron tip; expanded, the tab runs
-    // over the dynamics section. All three share one point structure so the outline can morph between them.
+    // Reference units (see header), measured from the original: a rounded body whose top edge rises smoothly from
+    // near the left corner to a plateau over the gain knob and falls again towards the right corner. Dynamic bands
+    // keep the same outline (their tab is drawn inside it); expanded, the plateau runs over the dynamics section.
+    // All shapes share one point structure so the outline can morph between them.
     struct Top { juce::Point<float> c1a, c1b, p1, c2a, c2b, p2, p3, p4, p5, c5a, c5b; };
     const float W = (float) collapsedWidth + shift();
-    const Top plain     { { 100, -2 }, { 150, -20 }, { 190, -25 }, { 205, -27 }, { 215, -26 }, { 233.5f, -26 }, { 277, -25 }, { 290, -22 },
-                          { 300, -19 }, { 345, -10 }, { 400, -2 } };
-    const Top dynamic   { { 45, -2 },  { 125, -7 },  { 176, -16.5f }, { 182, -19 }, { 186, tabTop }, { 196, tabTop }, { 276, tabTop },
-                          { 286.5f, -11 }, { 293, -4.5f }, { 335, -3 }, { 420, 0 } };
-    const Top expandedT { { 45, -2 },  { 125, -7 },  { 176, -16.5f }, { 182, -19 }, { 186, tabTop }, { 196, tabTop }, { 410, tabTop },
-                          { 424, -14 }, { 440, -5 }, { 500, -3 }, { 568, 0 } };
+    const Top plain     { { 90, -3 }, { 140, -21 }, { 192, -24.5f }, { 204, -26 }, { 214, -26.5f }, { 233.5f, -26.5f }, { 262, -26 },
+                          { 282, -23.5f }, { 300, -17.5f }, { 350, -8 }, { 415, -3 } };
+    const Top expandedT { { 90, -3 }, { 140, -21 }, { 192, -24.5f }, { 204, -26 }, { 214, -26.5f }, { 233.5f, -26.5f }, { 410, -26.5f },
+                          { 430, -23.5f }, { 448, -17.5f }, { 498, -8 }, { 563, -3 } };
 
     auto mix = [] (const Top& a, const Top& b, float t)
     {
@@ -636,9 +669,9 @@ void BandPanel::buildOutline()
         return Top { m (a.c1a, b.c1a), m (a.c1b, b.c1b), m (a.p1, b.p1), m (a.c2a, b.c2a), m (a.c2b, b.c2b), m (a.p2, b.p2),
                      m (a.p3, b.p3), m (a.p4, b.p4), m (a.p5, b.p5), m (a.c5a, b.c5a), m (a.c5b, b.c5b) };
     };
-    const Top top = mix (mix (plain, dynamic, dynAmt.current), expandedT, expAmt.current);
+    const Top top = mix (plain, expandedT, expAmt.current);
 
-    const float H = bodyHeight, r = 10.0f;
+    const float H = bodyHeight, r = cornerRadius;
     auto P = [this] (juce::Point<float> pt) { return toLocal (pt.x, pt.y); };
     auto Q = [this] (float x, float y) { return toLocal (x, y); };
 
@@ -648,8 +681,7 @@ void BandPanel::buildOutline()
     p.cubicTo (P (top.c1a), P (top.c1b), P (top.p1));
     p.cubicTo (P (top.c2a), P (top.c2b), P (top.p2));
     p.lineTo (P (top.p3));
-    p.lineTo (P (top.p4));
-    p.lineTo (P (top.p5));
+    p.quadraticTo (P (top.p4), P (top.p5));
     p.cubicTo (P (top.c5a), P (top.c5b), Q (W - r, 0.0f));
     p.quadraticTo (Q (W, 0.0f), Q (W, r));
     p.lineTo (Q (W, H - r));
@@ -658,6 +690,17 @@ void BandPanel::buildOutline()
     p.quadraticTo (Q (0.0f, H), Q (0.0f, H - r));
     p.closeSubPath();
     outline = p;
+
+    // the dynamics tab: a lifted area on the plateau, from a soft left flank to a chevron on its right
+    const float cx = chevronX();
+    juce::Path tab;
+    tab.startNewSubPath (Q (100.0f, -40.0f));
+    tab.lineTo (Q (cx - 1.5f, -40.0f));
+    tab.lineTo (Q (cx + 6.5f, -17.0f));
+    tab.lineTo (Q (cx - 20.0f, 17.0f));
+    tab.lineTo (Q (100.0f, 17.0f));
+    tab.closeSubPath();
+    dynTab = tab;
 }
 
 void BandPanel::resized()
@@ -666,10 +709,10 @@ void BandPanel::resized()
     const float sh = shift();
     auto centred = [this] (juce::Component& c, float cx, float cy, float w, float h) { c.setBounds (box (cx - w * 0.5f, cy - h * 0.5f, w, h)); };
 
-    // left column
-    bypassButton.setBounds (box (6.0f, 3.0f, 21.0f, 21.0f));
-    shape->setBounds (box (0.0f, 37.0f, 91.0f, 24.0f));
-    slope->setBounds (box (2.0f, 68.0f, 88.0f, 18.0f));
+    // left column: power in the corner tile, the shape tab flush with the edge
+    centred (bypassButton, tileSize * 0.5f, tileSize * 0.5f, 21.0f, 21.0f);
+    shape->setBounds (box (0.0f, 37.0f, 91.0f, 25.0f));
+    slope->setBounds (box (4.0f, 68.0f, 82.0f, 18.0f));
 
     // knobs: dial bounds only, captions are drawn by the island
     auto knobBox = [this] (st::Knob& k, float cx, float cy, float discR, bool recessed)
@@ -706,11 +749,11 @@ void BandPanel::resized()
     triggerButton->setBounds (box (321.0f, 8.0f, 70.0f, 20.0f));
 
     // right column
-    centred (gainQButton, 293.0f + dynShift(), 20.0f, 24.0f, 22.0f);
+    centred (gainQButton, 291.0f + dynShift(), 17.0f, 24.0f, 22.0f);
     centred (prevButton, 390.0f + sh, 12.0f, 15.0f, 18.0f);
     centred (nextButton, 420.0f + sh, 12.0f, 15.0f, 18.0f);
-    closeButton.setBounds (box (443.0f + sh, 3.0f, 21.0f, 21.0f));
-    placement->setBounds (box (377.0f + sh, 37.0f, 93.0f, 24.0f));
+    centred (closeButton, (float) collapsedWidth + sh - tileSize * 0.5f, tileSize * 0.5f, 21.0f, 21.0f);
+    placement->setBounds (box ((float) collapsedWidth - 91.0f + sh, 37.0f, 91.0f, 25.0f));
     centred (splitButton, 423.0f + sh, 78.0f, 19.0f, 19.0f);
 
     // cross-fades: the tab icons follow the dynamics amount, the dynamics section the expand amount
@@ -734,55 +777,94 @@ void BandPanel::resized()
 
 void BandPanel::paintBackground (juce::Graphics& g)
 {
-    const auto& t = st::Theme::get();
     const auto col = bandColour (band);
+    const float W = (float) collapsedWidth + shift();
 
-    // soft shadow inside our bounds
-    for (int i = 4; i >= 1; --i)
-    {
-        g.setColour (juce::Colours::black.withAlpha (0.09f));
-        g.fillPath (outline, juce::AffineTransform::translation (0.0f, (float) i * 1.6f));
-    }
+    // soft shadow under the island
+    juce::DropShadow (juce::Colours::black.withAlpha (0.5f), 14, { 0, 4 }).drawForPath (g, outline);
 
-    // dark translucent glass, a little lighter towards the top
-    const auto top = toLocal (0.0f, tabTop).y, bottom = toLocal (0.0f, bodyHeight + bulge).y;
-    g.setGradientFill (juce::ColourGradient (t.bg3.interpolatedWith (col, 0.045f).withAlpha (0.88f), 0.0f, top,
-                                             t.bg2.interpolatedWith (col, 0.025f).withAlpha (0.93f), 0.0f, bottom, false));
+    // glass: a dark, cool tint over the display's frosted (blurred) backdrop, a touch lighter towards the top
+    const auto top = toLocal (0.0f, -26.0f).y, bottom = toLocal (0.0f, bodyHeight + bulge).y;
+    g.setGradientFill (juce::ColourGradient (ink::glassTop.withAlpha (0.72f), 0.0f, top, ink::glassBottom.withAlpha (0.8f), 0.0f, bottom, false));
     g.fillPath (outline);
 
-    // hairline edge all round, and along the top a light tinted by the band's colour (fading at the ends)
-    g.setColour (juce::Colours::white.withAlpha (0.08f));
+    g.saveState();
+    g.reduceClipRegion (outline);
+
+    // dynamics tab: lifted (a little lighter, faintly tinted by the band), fading out down its left flank;
+    // a light chevron edge on its right
+    if (dynAmt.current > 0.01f)
+    {
+        const float a = dynAmt.current;
+        // an elliptical glow (unit circle stretched over the plateau) so the left flank and the bottom fade out
+        const auto lift = juce::Colours::white.interpolatedWith (col, 0.12f);
+        juce::ColourGradient fill (lift.withAlpha (0.095f * a), 0.0f, 0.0f, lift.withAlpha (0.0f), 1.0f, 0.0f, true);
+        fill.addColour (0.5, lift.withAlpha (0.075f * a));
+        const auto centre = toLocal (chevronX() - 42.0f - 0.5f * dynShift(), -28.0f);
+        juce::FillType glow (fill);
+        glow.transform = juce::AffineTransform::scale ((125.0f + 0.5f * dynShift()) * kScale, 38.0f * kScale).translated (centre);
+        g.setFillType (glow);
+        g.fillPath (dynTab);
+
+        // chevron edge; collapsed its lower leg ends on the gain well, expanded the section seam takes over
+        const float cx = chevronX(), x = expAmt.current;
+        juce::Path chevron;
+        chevron.startNewSubPath (toLocal (cx - 1.5f, -40.0f));
+        chevron.lineTo (toLocal (cx + 6.5f, -17.0f));
+        g.setColour (juce::Colours::white.withAlpha (0.11f * a));
+        g.strokePath (chevron, juce::PathStrokeType (1.0f));
+        if (x < 0.98f)
+        {
+            juce::Path leg;
+            leg.startNewSubPath (toLocal (cx + 6.5f, -17.0f));
+            leg.lineTo (toLocal (cx - 13.0f, 7.0f));
+            g.setColour (juce::Colours::white.withAlpha (0.11f * a * (1.0f - x)));
+            g.strokePath (leg, juce::PathStrokeType (1.0f));
+        }
+        if (x > 0.02f)
+        {
+            juce::Path seam;
+            seam.startNewSubPath (toLocal (cx + 6.5f, -17.0f));
+            seam.cubicTo (toLocal (cx + 11.0f, 16.0f), toLocal (cx + 11.0f, 66.0f), toLocal (cx + 5.0f, bodyHeight + 6.0f));
+            g.setColour (juce::Colours::white.withAlpha (0.07f * a * x));
+            g.strokePath (seam, juce::PathStrokeType (1.0f));
+        }
+    }
+
+    // corner tiles behind the power (top left) and delete (top right) buttons, flush with the corners
+    for (const float x : { 0.0f, W - tileSize })
+    {
+        const auto tile = juce::Rectangle<float> (toLocal (x, 0.0f), toLocal (x + tileSize, tileSize - 0.5f));
+        const float rad = 6.0f * kScale;
+        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.055f), 0.0f, tile.getY(),
+                                                 juce::Colours::white.withAlpha (0.03f), 0.0f, tile.getBottom(), false));
+        g.fillRoundedRectangle (tile, rad);
+        g.setColour (juce::Colours::black.withAlpha (0.25f));
+        g.drawRoundedRectangle (tile.translated (0.0f, 0.75f).reduced (0.5f), rad, 1.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.05f));
+        g.drawRoundedRectangle (tile.reduced (0.5f), rad, 1.0f);
+    }
+
+    g.restoreState();
+
+    // hairline edge all round
+    g.setColour (juce::Colours::white.withAlpha (0.075f));
     g.strokePath (outline, juce::PathStrokeType (1.0f));
+
+    // along the top, a light in the band's colour over the plateau, fading out down both flanks
     {
         g.saveState();
-        g.reduceClipRegion (juce::Rectangle<int> (0, 0, getWidth(), (int) toLocal (0.0f, 9.0f).y));
-        const float x0 = toLocal (0.0f, 0.0f).x, x1 = toLocal ((float) collapsedWidth + shift(), 0.0f).x;
-        const auto edgeCol = col.interpolatedWith (juce::Colours::white, 0.35f);
+        g.reduceClipRegion (juce::Rectangle<int> (0, 0, getWidth(), (int) toLocal (0.0f, 4.0f).y));
+        const float x0 = toLocal (110.0f, 0.0f).x, x1 = toLocal (390.0f + dynShift(), 0.0f).x;
+        const float c0 = toLocal (200.0f, 0.0f).x, c1 = toLocal (275.0f + dynShift(), 0.0f).x;
+        const auto edgeCol = col.interpolatedWith (juce::Colours::white, 0.2f);
         juce::ColourGradient edge (edgeCol.withAlpha (0.0f), x0, 0.0f, edgeCol.withAlpha (0.0f), x1, 0.0f, false);
-        edge.addColour (0.3, edgeCol.withAlpha (0.30f));
-        edge.addColour (0.55, edgeCol.withAlpha (0.38f));
-        edge.addColour (0.8, edgeCol.withAlpha (0.22f));
+        edge.addColour ((double) ((c0 - x0) / (x1 - x0)), edgeCol.withAlpha (0.5f));
+        edge.addColour ((double) ((c1 - x0) / (x1 - x0)), edgeCol.withAlpha (0.42f));
         g.setGradientFill (edge);
         g.strokePath (outline, juce::PathStrokeType (1.2f));
         g.restoreState();
     }
-
-    // seams of the expanded dynamics section
-    if (expAmt.current > 0.02f)
-    {
-        juce::Path seam;
-        seam.startNewSubPath (toLocal (285.0f, tabTop));
-        seam.lineTo (toLocal (291.0f, -21.0f));
-        seam.lineTo (toLocal (287.0f, -11.0f));
-        seam.startNewSubPath (toLocal (420.0f, -16.0f));
-        seam.cubicTo (toLocal (432.0f, 16.0f), toLocal (432.0f, 66.0f), toLocal (426.0f, bodyHeight + 6.0f));
-        g.setColour (juce::Colours::white.withAlpha (0.06f * expAmt.current));
-        g.strokePath (seam, juce::PathStrokeType (1.0f));
-    }
-
-    // small boxes behind the power and delete icons
-    paintSmallBox (g, bypassButton.getBounds().toFloat());
-    paintSmallBox (g, closeButton.getBounds().toFloat());
 }
 
 void BandPanel::paint (juce::Graphics& g)
@@ -801,76 +883,62 @@ void BandPanel::paint (juce::Graphics& g)
 
 void BandPanel::paintLabel (juce::Graphics& g, st::Knob& k, const juce::String& label, juce::Point<float> c)
 {
-    const auto& t = st::Theme::get();
     const bool showValue = k.isMouseOverOrDragging() && k.isEnabled();
     g.setFont (st::fonts::semibold (fs (12.5f)));
-    g.setColour (k.isEnabled() ? t.text.withAlpha (0.92f) : t.textFaint);
+    g.setColour (k.isEnabled() ? ink::label : ink::faint);
     g.drawText (showValue ? k.getParameter().getCurrentValueAsText() : label,
                 juce::Rectangle<float> (90.0f, 14.0f).withCentre (c), juce::Justification::centred, false);
 }
 
 void BandPanel::paintOverChildren (juce::Graphics& g)
 {
-    const auto& t = st::Theme::get();
     const auto p = proc.getBand (band);
     const float sh = shift();
 
-    paintLabel (g, *freq, "FREQ", toLocal (140.0f, 84.0f));
-    paintLabel (g, *gain, "GAIN", toLocal (gainCentreX, 91.5f));
-    paintLabel (g, *q, "Q", toLocal (328.7f + dynShift(), 84.0f));
+    paintLabel (g, *freq, "FREQ", toLocal (140.0f, 84.5f));
+    paintLabel (g, *gain, "GAIN", toLocal (gainCentreX, 91.0f));
+    paintLabel (g, *q, "Q", toLocal (328.7f + dynShift(), 84.5f));
     if (depthAmt.current > 0.02f)
     {
         g.saveState();
         g.setOpacity (depthAmt.current);
-        paintLabel (g, *depth, "DEPTH", toLocal (depthX(), 84.0f));
+        paintLabel (g, *depth, "DEPTH", toLocal (depthX(), 84.5f));
         g.restoreState();
     }
 
-    // centre references: "0 dB" over Gain on the plateau (when there is no dynamics tab), "1" over Q
+    // centre references with a small tick: "0 dB" over Gain on the plateau (when there is no dynamics tab), "1" over Q
     g.setFont (st::fonts::medium (fs (10.5f)));
-    g.setColour (t.textDim);
     if (dynAmt.current < 0.98f && st::dsp::eq::hasGain (p.shape))
     {
-        g.setColour (t.textDim.withAlpha (1.0f - dynAmt.current));
-        g.drawText ("0 dB", juce::Rectangle<float> (40.0f, 12.0f).withCentre (toLocal (gainCentreX, -12.0f)), juce::Justification::centred, false);
-        g.fillRect (juce::Rectangle<float> (1.0f, 3.0f).withCentre (toLocal (gainCentreX, -5.5f)));
+        g.setColour (ink::text.withAlpha (1.0f - dynAmt.current));
+        g.drawText ("0 dB", juce::Rectangle<float> (40.0f, 12.0f).withCentre (toLocal (gainCentreX, -13.0f)), juce::Justification::centred, false);
+        g.fillRect (juce::Rectangle<float> (1.0f, 3.0f * kScale).withCentre (toLocal (gainCentreX, -5.5f)));
     }
-    g.setColour (t.textDim);
     if (st::dsp::eq::hasQ (p.shape))
-        g.drawText ("1", juce::Rectangle<float> (20.0f, 12.0f).withCentre (toLocal (328.7f + dynShift(), 6.0f)), juce::Justification::centred, false);
-
-    // range grip marks on the gain well (top left), hinting that the ring can be dragged
-    if (st::dsp::eq::hasGain (p.shape))
     {
-        const auto c = toLocal (gainCentreX, 39.4f);
-        const float a = -0.95f;
-        const auto pos = c.getPointOnCircumference (40.0f * kScale, a);
-        g.setColour (t.text.withAlpha (0.4f));
-        for (int i = -1; i <= 1; i += 2)
-        {
-            const auto o = juce::Point<float> (std::cos (a), std::sin (a)) * (float) i * 1.8f;
-            const auto d = juce::Point<float> (std::sin (a), -std::cos (a)) * 2.2f;
-            g.drawLine (juce::Line<float> (pos + o - d, pos + o + d), 1.0f);
-        }
+        const float qx = 328.7f + dynShift();
+        g.setColour (ink::text);
+        g.drawText ("1", juce::Rectangle<float> (20.0f, 12.0f).withCentre (toLocal (qx, 6.0f)), juce::Justification::centred, false);
+        g.fillRect (juce::Rectangle<float> (1.0f, 3.0f * kScale).withCentre (toLocal (qx, 13.0f)));
     }
 
     // "(multiple)" when several bands are edited and there is no slope to show
     if (numSelected > 1 && ! slope->isVisible())
     {
-        g.setFont (st::fonts::medium (fs (12.0f)));
-        g.setColour (t.textDim);
+        g.setFont (st::fonts::semibold (fs (12.5f)));
+        g.setColour (ink::text);
         g.drawText ("(multiple)", slope->getBounds().toFloat(), juce::Justification::centred, false);
     }
 
     // band number between the nav arrows (dim, like the arrows)
     g.setFont (st::fonts::medium (fs (11.5f)));
-    g.setColour (p.bypass ? t.textFaint : t.textDim);
+    g.setColour (p.bypass ? ink::faint : ink::text);
     g.drawText (juce::String (band + 1), juce::Rectangle<float> (20.0f, 14.0f).withCentre (toLocal (405.0f + sh, 12.0f)), juce::Justification::centred, false);
 
     if (expAmt.current > 0.02f)
     {
         g.setFont (st::fonts::semibold (fs (10.5f)));
-        g.setColour (t.textDim.withAlpha (expAmt.current * expAmt.current));
+        g.setColour (ink::text.withAlpha (expAmt.current * expAmt.current));
         auto caption = [&] (st::Knob& k, const char* text, float x)
         {
             g.drawText (k.isMouseOverOrDragging() ? k.getParameter().getCurrentValueAsText() : juce::String (text),
@@ -880,7 +948,7 @@ void BandPanel::paintOverChildren (juce::Graphics& g)
         caption (*release, "R", releaseX());
         if (specAmt.current > 0.02f)
         {
-            g.setColour (t.textDim.withAlpha (expAmt.current * expAmt.current * specAmt.current));
+            g.setColour (ink::text.withAlpha (expAmt.current * expAmt.current * specAmt.current));
             caption (*density, "DENS", 387.0f);
         }
     }

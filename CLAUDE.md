@@ -41,7 +41,11 @@ Plugin-specific notes:
 - UI: `Source/ui/EqDisplay.*` (display + all band interaction), `Source/ui/BandIsland.*` (the floating band
   controls; dynamics expand inline), `Source/ui/Panels.*` (EQ Match and output popovers, bottom bar), `Source/PluginEditor.*`.
   The look follows Pro-Q 4's band controls and display closely (measured from FabFilter's help screenshots);
-  keep it that way, without FabFilter names or logos. ST EQ uses a neutral graphite theme (set in the processor
+  keep it that way, without FabFilter names or logos. The island is dark, cool, nearly opaque glass: the display
+  draws a blurred copy of itself (and the window backdrop) inside the island's outline (`EqDisplay::setFrost`, fed by
+  the editor every frame), the island tints it. Shape / placement tabs and the power / delete tiles sit flush with
+  the edges and corners; knobs use the shell's `st::Knob::Look::flat`; the dynamics tab is a soft lift inside the
+  outline ending in a chevron. The island uses its own neutral greys (`ink` in BandIsland.cpp), not the warm theme text. ST EQ uses a neutral graphite theme (set in the processor
   constructor) instead of ST Sat's red display.
 - Verify: `StEqPluginTests` (responses per mode vs analog, latency, dynamics, stress, state, CPU, UI paint cost),
   `StEqPluginTests --snapshot <dir>` (look at the PNGs), `auval -v aufx Steq StAu`.

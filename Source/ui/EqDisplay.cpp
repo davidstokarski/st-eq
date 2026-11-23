@@ -746,6 +746,7 @@ void EqDisplay::paint (juce::Graphics& g)
         // 3D mode views: drawn directly (no layers), then the same dots / parameter display / meter
         if (view == View::threeD) paint3D (g); else paintTop (g);
         paintDots (g);
+        paintFrost (g);
         paintReadout (g);
         if (! compact) paintMeter (g);
         if (drag == Drag::rubber && ! rubber.isEmpty())
@@ -771,6 +772,7 @@ void EqDisplay::paint (juce::Graphics& g)
     paintDynHandles (g);
     paintTriggerBar (g);
     paintDots (g);
+    paintFrost (g);
     paintReadout (g);
     if (! compact) paintMeter (g);
 
@@ -808,6 +810,89 @@ void EqDisplay::paint (juce::Graphics& g)
         g.drawText ("Double-click or drag the curve to create a band", plot.withSizeKeepingCentre (500.0f, 20.0f).translated (0.0f, -60.0f),
                     juce::Justification::centred, false);
     }
+}
+
+namespace
+{
+    /** In-place separable box blur (premultiplied ARGB, every channel alike); a few passes approach a gaussian. */
+    void boxBlur (juce::Image& img, int r, int passes)
+    {
+        juce::Image::BitmapData bd (img, juce::Image::BitmapData::readWrite);
+        const int w = bd.width, h = bd.height;
+        std::vector<juce::uint8> line ((size_t) juce::jmax (w, h) * 4);
+        const int div = 2 * r + 1;
+        auto blurLine = [&] (juce::uint8* p, int n, int stride)
+        {
+            for (int i = 0; i < n; ++i)
+                std::memcpy (&line[(size_t) i * 4], p + i * stride, 4);
+            for (int ch = 0; ch < 4; ++ch)
+            {
+                auto at = [&] (int i) { return (int) line[(size_t) juce::jlimit (0, n - 1, i) * 4 + (size_t) ch]; };
+                int sum = 0;
+                for (int i = -r; i <= r; ++i) sum += at (i);
+                for (int i = 0; i < n; ++i)
+                {
+                    p[i * stride + ch] = (juce::uint8) (sum / div);
+                    sum += at (i + r + 1) - at (i - r);
+                }
+            }
+        };
+        for (int pass = 0; pass < passes; ++pass)
+        {
+            for (int y = 0; y < h; ++y) blurLine (bd.getLinePointer (y), w, bd.pixelStride);
+            for (int x = 0; x < w; ++x) blurLine (bd.getPixelPointer (x, 0), h, bd.lineStride);
+        }
+    }
+}
+
+void EqDisplay::setFrost (const juce::Path& outline, float alpha)
+{
+    if (juce::approximatelyEqual (alpha, frostAlpha) && outline == frostOutline) return;
+    frostOutline = outline;
+    frostAlpha = alpha;
+    repaint();
+}
+
+void EqDisplay::paintFrost (juce::Graphics& g)
+{
+    if (frostAlpha < 0.01f || frostOutline.isEmpty()) return;
+
+    // Re-render what lies under the island at quarter resolution, blur it and draw it back inside the outline.
+    // The source area snaps to multiples of 4 px so the sampling phase stays put while the island glides.
+    constexpr int step = 4;
+    constexpr int radius = 1, passes = 3;   // sigma ~ 1.4 image px ~ 6 px at display scale
+    auto area = frostOutline.getBounds().getSmallestIntegerContainer().expanded (step * (radius * passes + 2));
+    area.setX (area.getX() - ((area.getX() % step) + step) % step);
+    area.setY (area.getY() - ((area.getY() % step) + step) % step);
+    const int iw = (area.getWidth() + step - 1) / step, ih = (area.getHeight() + step - 1) / step;
+    area.setSize (iw * step, ih * step);
+    if (frostImage.getWidth() != iw || frostImage.getHeight() != ih)
+        frostImage = juce::Image (juce::Image::ARGB, iw, ih, false, juce::SoftwareImageType());
+
+    {
+        juce::Graphics fg (frostImage);
+        fg.fillAll (st::Theme::get().bg1);
+        fg.addTransform (juce::AffineTransform::translation ((float) -area.getX(), (float) -area.getY()).scaled (1.0f / (float) step));
+        if (paintBackdrop) paintBackdrop (fg);
+        // front view: grid, analyser and curves; the 3D / Top views are too costly to draw twice (and barely show
+        // through the glass), so there the backdrop alone is frosted
+        if (getView() == View::front)
+        {
+            const auto all = getLocalBounds().toFloat();
+            fg.drawImage (gridLayer, all, juce::RectanglePlacement::stretchToFit);
+            paintSpectrum (fg);
+            fg.drawImage (curveLayer, all, juce::RectanglePlacement::stretchToFit);
+            paintDots (fg);
+        }
+    }
+    boxBlur (frostImage, radius, passes);
+
+    g.saveState();
+    g.reduceClipRegion (frostOutline);
+    g.setOpacity (frostAlpha);
+    g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+    g.drawImage (frostImage, area.toFloat(), juce::RectanglePlacement::stretchToFit);
+    g.restoreState();
 }
 
 void EqDisplay::paintGrid (juce::Graphics& g)

@@ -26,7 +26,6 @@ public:
 private:
     juce::UndoManager& undo;
     juce::ParameterAttachment attachment;
-    juce::Colour tint;
     int index = 0;
     void setIndex (int);
 };
@@ -57,6 +56,8 @@ public:
     IslandButton (st::icons::Icon, const juce::String& tooltip = {});
     void setOnColour (juce::Colour c) { onColour = c; repaint(); }
     void setMinimal (bool) {}
+    /** Brighter and bolder at rest (the delete cross). */
+    void setEmphasis (bool e) { emphasis = e; repaint(); }
     void paintButton (juce::Graphics&, bool over, bool down) override;
     void buttonStateChanged() override { startTimerHz (60); }
     void enablementChanged() override { startTimerHz (60); }
@@ -64,6 +65,7 @@ public:
 private:
     st::icons::Icon icon;
     juce::Colour onColour;
+    bool emphasis = false;
     st::Animated hover, lit;
     void timerCallback() override;
 };
@@ -93,7 +95,7 @@ public:
         at kScale, which makes the island ~38 % of the window width like the reference. */
     static constexpr float kScale = 0.85f;
     static constexpr int collapsedWidth = 470, expandedExtra = 148, depthExtra = 74;   // reference units (depth: 3D mode)
-    static constexpr float bodyHeight = 93.0f, bulge = 7.0f, tabTop = -20.0f;      // reference units
+    static constexpr float bodyHeight = 93.0f, bulge = 5.0f, tabTop = -20.0f, cornerRadius = 9.0f, tileSize = 24.0f;   // reference units
     static constexpr int marginX = 14, marginTop = 32, marginBottom = 16;          // component pixels
     static constexpr int height = marginTop + (int) ((bodyHeight + bulge) * kScale) + marginBottom;
     static constexpr float gainCentreX = 233.5f;
@@ -108,6 +110,8 @@ public:
     void paintOverChildren (juce::Graphics&) override;
     void resized() override;
     bool hitTest (int x, int y) override { return outline.contains ((float) x, (float) y); }
+    /** The island's outline (local coordinates): the display draws its frosted backdrop inside it. */
+    const juce::Path& getOutline() const noexcept { return outline; }
 
 private:
     StEqProcessor& proc;
@@ -135,7 +139,7 @@ private:
     IslandButton sidechainButton { st::icons::Icon::sidechain, "Trigger from the external side chain" };
     IslandButton auditionButton { st::icons::Icon::headphones, "Hold to hear what triggers the dynamics" };
 
-    juce::Path outline;
+    juce::Path outline, dynTab;
     juce::Image backgroundCache;
     float cacheScale = 0.0f;
     bool last3d = false;
@@ -149,6 +153,8 @@ private:
     /** Dynamics section width (moves Q) and, in 3D mode, the depth knob too (moves the right column). */
     float dynShift() const noexcept { return (float) expandedExtra * expAmt.current; }
     float shift() const noexcept { return dynShift() + (float) depthExtra * depthAmt.current; }
+    /** x of the dynamics tab's chevron (its right end). */
+    float chevronX() const noexcept { return 276.0f + dynShift(); }
     float depthX() const noexcept { return 328.7f + dynShift() + 66.0f; }
     float attackX() const noexcept { return 331.0f - 4.0f * specAmt.current; }
     float releaseX() const noexcept { return 377.0f - 20.0f * specAmt.current; }

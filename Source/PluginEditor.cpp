@@ -36,6 +36,20 @@ StEqEditor::StEqEditor (StEqProcessor& p)
     display.onMatchRequested = [this] { toggleMatch(); };
     display.onSelectionChanged = [this] { updatePanel(); };
     display.onFrame = [this] (double dt) { animate (dt); };
+    // the band island's frosted backdrop includes the window backdrop behind the display: a half-resolution copy,
+    // made once (painting the backdrop at another scale would make the shell rebuild its cached one every frame)
+    display.paintBackdrop = [this] (juce::Graphics& g)
+    {
+        const auto bounds = getContent().getLocalBounds();
+        if (backdropCopy.isNull())
+        {
+            backdropCopy = juce::Image (juce::Image::RGB, bounds.getWidth() / 2, bounds.getHeight() / 2, false);
+            juce::Graphics bg (backdropCopy);
+            bg.addTransform (juce::AffineTransform::scale (0.5f));
+            paintBackground (bg, bounds);
+        }
+        g.drawImage (backdropCopy, bounds.toFloat().translated ((float) -display.getX(), (float) -display.getY()), juce::RectanglePlacement::stretchToFit);
+    };
 
     // restore the selection
     juce::Array<int> sel;
@@ -194,11 +208,16 @@ void StEqEditor::animate (double dt)
         panel->setBounds (juce::roundToInt (panelX.current), panelY + juce::roundToInt ((1.0f - panelFade.current) * 8.0f),
                           panel->getPreferredWidth(), BandPanel::height);
         panel->setAlpha (panelFade.current);
+        auto frost = panel->getOutline();
+        frost.applyTransform (juce::AffineTransform::translation ((float) (panel->getX() - display.getX()), (float) (panel->getY() - display.getY())));
+        display.setFrost (frost, panelFade.current);
 
         // free trigger range bar just above the island while the dynamics section is open
         if (panel->isExpanded()) display.setTriggerBar (panel->getBand(), (float) panelY - 6.0f);
         else display.setTriggerBar (-1, -1.0f);
     }
+    else
+        display.setFrost ({}, 0.0f);
 
     if (outgoing != nullptr)
     {
