@@ -80,3 +80,7 @@ auval -v aufx Steq StAu
 ```
 
 Release: `scripts/release.sh` (bump `project(... VERSION x.y.z)` first).
+
+## Contributing
+
+See the shared [contributor notes](https://github.com/davidstokarski/st-shell/blob/main/CONTRIBUTING.md) in ST Shell. All PRs to `main` need approval from @davidstokarski.
