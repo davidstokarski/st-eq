@@ -158,7 +158,7 @@ void EqDisplay::createAnalyzers()
 {
     st::SpectrumAnalyzer::Options o;
     o.fftOrder = 11 + juce::jlimit (0, 3, analyzer.resolutionIndex);
-    o.hopSize = juce::jmin (256, (1 << o.fftOrder) / 8);
+    o.hopSize = 0;   // a fresh FFT every display frame (in step with the monitor)
     o.numDisplayPoints = 400;
     o.minHz = 8.0f;
     o.maxHz = 32000.0f;
